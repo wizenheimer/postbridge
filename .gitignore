@@ -1,0 +1,208 @@
+# ==================================
+# Dependencies
+# ==================================
+node_modules/
+bower_components/
+jspm_packages/
+
+# ==================================
+# Build Outputs
+# ==================================
+dist/
+dist-ssr/
+lib/
+build/
+out/
+*.tsbuildinfo
+*.js.map
+*.d.ts.map
+
+# ==================================
+# Logs
+# ==================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*storybook.log
+
+# ==================================
+# Testing
+# ==================================
+coverage/
+*.lcov
+.nyc_output/
+test-results/
+playwright-report/
+.jest-cache/
+
+# ==================================
+# Environment Variables
+# ==================================
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env*.local
+
+# ==================================
+# Operating System Files
+# ==================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ==================================
+# IDEs and Editors
+# ==================================
+# VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+Session.vim
+Sessionist.vim
+.netrwhist
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Visual Studio
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.user
+*.userosscache
+*.sln.docstates
+
+# ==================================
+# Package Manager Files
+# ==================================
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.yarn/
+.pnp.*
+.pnpm-debug.log
+
+# ==================================
+# Temporary Files
+# ==================================
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.cache
+.cache/
+*.pid
+*.seed
+*.pid.lock
+
+# ==================================
+# Storybook
+# ==================================
+storybook-static/
+.storybook-out/
+
+# ==================================
+# TypeScript
+# ==================================
+*.tsbuildinfo
+.tsbuildinfo
+
+# ==================================
+# Miscellaneous
+# ==================================
+*.local
+.vercel
+.turbo
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.next/
+.nuxt/
+.docusaurus/
+.serverless/
+.fusebox/
+.dynamodb/
+.tern-port
+.vscode-test
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# ==================================
+# Optional npm cache directory
+# ==================================
+.npm
+
+# ==================================
+# Optional eslint cache
+# ==================================
+.eslintcache
+
+# ==================================
+# Optional stylelint cache
+# ==================================
+.stylelintcache
+
+# ==================================
+# Sentry
+# ==================================
+.sentryclirc
+
+# ==================================
+# Local History (e.g., VSCode Local History extension)
+# ==================================
+.history/
