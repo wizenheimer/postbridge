@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bridge - Multi-Channel Demo</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Bridge Multi-Channel Demo</h1>
+        <p class="subtitle">Two independent counters on different channels</p>
+      </header>
+
+      <div class="instructions">
+        <p><strong>Try this:</strong> Open this page in multiple tabs and interact with both counters.</p>
+        <p>Notice how Channel A and Channel B are completely isolated - changes in one don't affect the other!</p>
+      </div>
+
+      <!-- Channel A Counter -->
+      <section class="channel-section channel-a">
+        <div class="channel-header">
+          <h2>Channel A Counter</h2>
+          <span class="channel-badge">channel: counter-a</span>
+        </div>
+
+        <div class="status-bar">
+          <div class="status-item">
+            <span class="label">Status:</span>
+            <span id="statusA" class="status">Initializing...</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Tab ID:</span>
+            <span id="tabIdA" class="tab-id">-</span>
+          </div>
+        </div>
+
+        <div class="counter-display">
+          <div class="counter-value" id="counterA">0</div>
+          <div class="counter-label">Count</div>
+        </div>
+
+        <div class="controls">
+          <button id="incrementA" class="btn btn-primary" disabled>
+            Increment A
+          </button>
+          <button id="decrementA" class="btn btn-secondary" disabled>
+            Decrement A
+          </button>
+          <button id="resetA" class="btn btn-danger" disabled>
+            Reset A
+          </button>
+        </div>
+      </section>
+
+      <!-- Channel B Counter -->
+      <section class="channel-section channel-b">
+        <div class="channel-header">
+          <h2>Channel B Counter</h2>
+          <span class="channel-badge">channel: counter-b</span>
+        </div>
+
+        <div class="status-bar">
+          <div class="status-item">
+            <span class="label">Status:</span>
+            <span id="statusB" class="status">Initializing...</span>
+          </div>
+          <div class="status-item">
+            <span class="label">Tab ID:</span>
+            <span id="tabIdB" class="tab-id">-</span>
+          </div>
+        </div>
+
+        <div class="counter-display">
+          <div class="counter-value" id="counterB">0</div>
+          <div class="counter-label">Count</div>
+        </div>
+
+        <div class="controls">
+          <button id="incrementB" class="btn btn-primary" disabled>
+            Increment B
+          </button>
+          <button id="decrementB" class="btn btn-secondary" disabled>
+            Decrement B
+          </button>
+          <button id="resetB" class="btn btn-danger" disabled>
+            Reset B
+          </button>
+        </div>
+      </section>
+
+      <footer>
+        <p>Open multiple tabs to see cross-tab synchronization</p>
+        <p class="note">
+          Note: Channel A and Channel B maintain independent state - they never interfere with each other!
+        </p>
+      </footer>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
+
