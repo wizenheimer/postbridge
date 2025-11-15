@@ -1,26 +1,83 @@
-# PostBridge
+<div align="center">
 
-**Type-safe RPC that makes cross-context browser communication feel like local function calls.**
+<h1>PostBridge</h1>
+
+<p>Type-safe RPC for cross-context communication</p>
+
+<p>Make Web Workers, iframes, and browser tabs talk to each other like they're in the same room</p>
+
+<p>
+  <a href="#quick-start"><strong>Quick Start</strong></a> |
+  <a href="#communication-patterns"><strong>Patterns</strong></a> |
+  <a href="https://wizenheimer.github.io/postbridge"><strong>Documentation</strong></a> |
+  <a href="./examples"><strong>Examples</strong></a>
+</p>
+
+</div>
+
+![PostBridge Overview](media/banner.png)
+
+---
 
 PostBridge eliminates the complexity of `postMessage` by providing a natural, Promise-based API for communication between isolated JavaScript contexts—Web Workers, iframes, Node.js Worker Threads, and browser tabs. Write async/await function calls instead of wrestling with event listeners, message routing, and manual ID tracking.
-
-```js
-// Instead of this postMessage hell...
-worker.postMessage({ action: "CALCULATE", id: "123", data: [1, 2, 3] });
-worker.addEventListener("message", (event) => {
-  if (event.data.id === "123") console.log(event.data.result);
-});
-
-// Just do this
-// Runs in a remote context iframe, another tab or web worker
-const connection = await host.connect(worker, schema);
-const result = await connection.remote.calculate([1, 2, 3]);
-```
 
 ## Installation
 
 ```bash
 npm i postbridge
+```
+
+## Communication Patterns
+
+PostBridge supports three main communication patterns:
+
+### 1:1 Communication (Host/Guest)
+
+Perfect for iframe ↔ parent and worker ↔ main thread communication.
+
+```
+┌─────────────┐                         ┌─────────────┐
+│    Host     │ ←─────────────────────→ │    Guest    │
+│ (Main Page) │    Bidirectional RPC    │ (iframe or  │
+│             │                         │   worker)   │
+└─────────────┘                         └─────────────┘
+```
+
+### Cross-Tab Broadcasting (1:N)
+
+Broadcast state changes across all browser tabs using SharedWorkers.
+
+```
+            ┌─────────────────────────────────┐
+            │      SharedWorker (Relay)       │
+            └─────────────────────────────────┘
+                     ↑       ↑       ↑
+                     │       │       │
+              ┌──────┘       │       └──────┐
+              │              │              │
+          ┌───↓───┐      ┌───↓───┐      ┌───↓───┐
+          │ Tab 1 │      │ Tab 2 │      │ Tab 3 │
+          │       │      │       │      │       │
+          └───────┘      └───────┘      └───────┘
+           Broadcast → All tabs see the update
+```
+
+### Direct Tab-to-Tab Messaging (1:1 Targeted)
+
+Send messages to specific tabs for peer-to-peer communication.
+
+```
+            ┌─────────────────────────────────┐
+            │      SharedWorker (Router)      │
+            └─────────────────────────────────┘
+                     ↑                  ↓
+                     │                  │
+              ┌──────┘                  └─────┐
+              │                               │
+          ┌───↓───┐                       ┌───↓───┐
+          │ Tab 1 │ ── Direct Message ──→ │ Tab 2 │
+          │       │     (Tab 2 only)      │       │
+          └───────┘                       └───────┘
 ```
 
 ## Quick Start
@@ -95,6 +152,26 @@ Modern web applications run code in **isolated execution contexts** for security
 - **Node.js Worker Threads** provide true parallel processing
 
 But these contexts are **completely isolated** from each other. They can't share memory, can't call each other's functions directly, and can't even access each other's variables. This isolation is by design—it's what keeps your application secure and stable.
+
+```
+┌──────────────────────────┐
+│     Main Thread          │
+│  - Global scope          │
+│  - window object         │
+│  - DOM access            │
+│  - Cannot share memory   │
+└──────────────────────────┘
+            ║
+            ║ (isolated)
+            ║
+┌──────────────────────────┐
+│      Web Worker          │
+│  - Separate global scope │
+│  - NO window object      │
+│  - NO DOM access         │
+│  - Cannot access parent  │
+└──────────────────────────┘
+```
 
 ### The Traditional Solution: postMessage
 
@@ -240,6 +317,30 @@ const result = await connection.remote.calculate([1, 2, 3]);
 ```
 
 **That's it.** No message routing. No ID generation. No manual error handling. Just call the function.
+
+#### How It Works
+
+Under the hood, PostBridge handles all the complexity:
+
+```
+Host                                    Guest
+  │                                       │
+  │ await remote.calculate([1,2,3])       │
+  │                                       │
+  │─── RPC_REQUEST ─────────────────────→ │
+  │    { callID: 'abc',                   │
+  │      method: 'calculate',             │
+  │      args: [[1,2,3]] }                │
+  │                                       │
+  │                        Execute: calculate([1,2,3])
+  │                        Result: 6
+  │                                       │
+  │←── RPC_RESOLVE ────────────────────── │
+  │    { callID: 'abc',                   │
+  │      result: 6 }                      │
+  │                                       │
+  │ Promise resolves with: 6              │
+```
 
 ### How PostBridge Fixes Everything
 
