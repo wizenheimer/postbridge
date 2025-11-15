@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bridge - Cross-Tab Sync Example</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Bridge Demo</h1>
+  <p class="subtitle">Cross-Tab State Synchronization</p>
+
+  <div class="instructions">
+    <strong>Instructions:</strong>
+    Open this page in multiple browser tabs, then click the buttons below.
+    Watch as the counter updates simultaneously in all tabs!
+  </div>
+
+  <div id="status" class="status connecting">
+    [CONNECTING] Initializing SharedWorker...
+  </div>
+
+  <div class="counter-section">
+    <div class="counter-label">Synchronized Counter</div>
+    <div class="counter-value" id="counter">0</div>
+    <div class="button-group">
+      <button id="incrementBtn" disabled>+ Increment</button>
+      <button id="decrementBtn" disabled>- Decrement</button>
+      <button id="resetBtn" disabled>Reset</button>
+    </div>
+    <div class="tab-info">
+      Tab ID: <span class="tab-id" id="tabId">...</span>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
