@@ -1,0 +1,633 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="API Reference/guest API" />
+
+# Guest API Reference
+
+Complete API reference for the guest module.
+
+## guest.connect()
+
+Establishes a connection from a guest (child context) to its host (parent context).
+
+### Signature
+
+```typescript
+function connect<GuestSchema, HostSchema>(
+  schema?: GuestSchema,
+  options?: GuestConnectOptions
+): Promise<Connection<HostSchema>>
+```
+
+### Parameters
+
+#### `schema` (optional)
+Object defining methods and data to expose to the host.
+
+**Type:** `Schema = Record<string, any>`
+
+**Default:** `{}`
+
+**Structure:**
+```typescript
+interface Schema {
+  // Functions: Exposed as callable methods
+  [key: string]: Function | NestedSchema | any;
+}
+```
+
+**Examples:**
+```javascript
+// Simple methods
+{
+  processData: (data) => data.map(x => x * 2),
+  calculateSum: (numbers) => numbers.reduce((a, b) => a + b, 0)
+}
+
+// Async methods
+{
+  fetchData: async (url) => {
+    const response = await fetch(url);
+    return response.json();
+  }
+}
+
+// Methods with remote parameter (bidirectional RPC)
+{
+  processWithLogging: async (data, remote) => {
+    await remote.log('Processing started');
+    const result = processData(data);
+    await remote.log('Processing complete');
+    return result;
+  }
+}
+
+// Nested methods
+{
+  math: {
+    add: (a, b) => a + b,
+    subtract: (a, b) => a - b
+  },
+  string: {
+    reverse: (s) => s.split('').reverse().join('')
+  }
+}
+
+// With configuration
+{
+  // Methods
+  process: (data) => processData(data),
+
+  // Configuration (not callable)
+  config: {
+    version: '1.0',
+    capabilities: ['gpu', 'wasm']
+  }
+}
+```
+
+#### `options` (optional)
+Configuration options for the connection.
+
+**Type:** `GuestConnectOptions`
+
+```typescript
+interface GuestConnectOptions {
+  // Override host target (advanced)
+  hostTarget?: Target;
+
+  // Callback for initialization
+  onConnectionSetup?: (remote: HostSchema) => Promise<void> | void;
+}
+```
+
+**Fields:**
+
+##### `hostTarget` (optional)
+Override automatic host detection. Rarely needed.
+
+**Type:** `Target`
+
+**Default:** Auto-detected based on context
+- Web Worker → `self`
+- iframe → `window.parent`
+- Node.js Worker → `parentPort`
+
+**Example:**
+```javascript
+// Manual target (advanced use case)
+const connection = await guest.connect(schema, {
+  hostTarget: customTarget
+});
+```
+
+##### `onConnectionSetup` (optional)
+Async callback executed during handshake, before connection resolves.
+
+**Type:** `(remote: HostSchema) => Promise<void> | void`
+
+**When it runs:** After receiving HANDSHAKE_REPLY, before sending confirmation
+
+**Use cases:**
+- Load initial data from host
+- Initialize worker state
+- Validate configuration
+
+**Example:**
+```javascript
+let config;
+
+const connection = await guest.connect(schema, {
+  onConnectionSetup: async (remote) => {
+    // Load config from host
+    config = await remote.getConfig();
+    console.log('Loaded config:', config);
+
+    // Initialize with config
+    initialize(config);
+
+    // Notify host
+    await remote.log('Worker initialized');
+  }
+});
+
+// Connection resolves after setup completes
+console.log('Ready to work!');
+```
+
+**Important:** The connection promise doesn't resolve until `onConnectionSetup` completes.
+
+### Return Value
+
+Returns a `Promise` that resolves to a `Connection` object.
+
+**Type:** `Promise<Connection<HostSchema>>`
+
+#### Connection Object
+
+```typescript
+interface Connection<RemoteSchema = any> {
+  id: string;
+  remote: RemoteSchema;
+  close: () => void;
+}
+```
+
+**Fields:**
+
+##### `id: string`
+Unique connection identifier assigned by host.
+
+```javascript
+const connection = await guest.connect(schema);
+console.log(connection.id); // "1699901234567-k2j5h3g8f"
+```
+
+##### `remote: RemoteSchema`
+Proxy object for calling host methods.
+
+```javascript
+const connection = await guest.connect(schema);
+
+// Call host methods
+await connection.remote.log('Hello from worker');
+const config = await connection.remote.getConfig();
+
+// Nested methods
+const sum = await connection.remote.math.add(5, 3);
+```
+
+**Note:** All methods are async and return Promises.
+
+##### `close: () => void`
+Closes the connection and cleans up resources.
+
+```javascript
+const connection = await guest.connect(schema);
+
+// Use connection
+await connection.remote.doWork();
+
+// Cleanup
+connection.close();
+```
+
+**What close() does:**
+1. Removes all event listeners
+2. Clears RPC handlers
+3. Frees memory
+
+**Important:** Always call when done to prevent memory leaks.
+
+### TypeScript Support
+
+```typescript
+import { guest, Connection } from 'postbridge';
+
+// Define schemas
+interface GuestSchema {
+  processData: (data: number[]) => Promise<number[]>;
+  calculateSum: (numbers: number[]) => Promise<number>;
+}
+
+interface HostSchema {
+  log: (msg: string) => void;
+  getConfig: () => Promise<{ apiKey: string }>;
+}
+
+// Type-safe connection
+const connection = await guest.connect<GuestSchema, HostSchema>({
+  processData: async (data) => data.map(x => x * 2),
+  calculateSum: async (numbers) => numbers.reduce((a, b) => a + b, 0)
+});
+
+// Type-safe remote calls
+await connection.remote.log('Hello'); // 
+const config = await connection.remote.getConfig(); // { apiKey: string }
+
+//  TypeScript errors
+await connection.remote.unknownMethod(); // Error: method doesn't exist
+await connection.remote.log(123); // Error: wrong type
+```
+
+### Examples
+
+#### Basic Web Worker
+
+```javascript
+// worker.js
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  // Expose methods to host
+  processData: (data) => {
+    return data.map(x => x * 2);
+  },
+
+  calculateAverage: (numbers) => {
+    return numbers.reduce((a, b) => a + b, 0) / numbers.length;
+  }
+});
+
+console.log('Worker ready, connection ID:', connection.id);
+```
+
+#### With Initialization
+
+```javascript
+// worker.js
+import { guest } from 'postbridge';
+
+let apiKey;
+let database;
+
+const connection = await guest.connect({
+  fetchData: async (id) => {
+    const response = await fetch(`https://api.example.com/data/${id}`, {
+      headers: { 'Authorization': apiKey }
+    });
+    return response.json();
+  },
+
+  saveData: async (data) => {
+    return database.save(data);
+  }
+}, {
+  onConnectionSetup: async (remote) => {
+    // Get API key from host
+    apiKey = await remote.getApiKey();
+
+    // Initialize database
+    database = await initDatabase();
+
+    // Notify host
+    await remote.log('Worker initialized with API key');
+  }
+});
+
+console.log('Worker ready!');
+```
+
+#### Bidirectional Communication
+
+```javascript
+// worker.js
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  processLargeDataset: async (dataset, remote) => {
+    const total = dataset.length;
+    const results = [];
+
+    for (let i = 0; i < total; i++) {
+      // Process item
+      const result = processItem(dataset[i]);
+      results.push(result);
+
+      // Report progress to host
+      if (i % 100 === 0) {
+        await remote.updateProgress(i, total);
+      }
+    }
+
+    // Final progress
+    await remote.updateProgress(total, total);
+
+    return results;
+  }
+});
+```
+
+#### iframe Guest
+
+```javascript
+// Inside iframe
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  render: (data) => {
+    document.getElementById('content').innerHTML = data.html;
+  },
+
+  getData: () => {
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      url: window.location.href
+    };
+  }
+});
+
+// Call parent methods
+await connection.remote.notifyReady();
+```
+
+#### Node.js Worker
+
+```javascript
+// worker.js (Node.js Worker Thread)
+const { parentPort } = require('worker_threads');
+const { guest } = require('postbridge');
+
+const connection = await guest.connect({
+  processFile: async (filePath) => {
+    const fs = require('fs').promises;
+    const data = await fs.readFile(filePath, 'utf8');
+    return processData(data);
+  },
+
+  generateReport: async (params) => {
+    // CPU-intensive report generation
+    return generateReport(params);
+  }
+});
+
+console.log('Worker thread ready');
+```
+
+#### With Transferables
+
+```javascript
+// worker.js
+import { guest, withTransferable } from 'postbridge';
+
+const connection = await guest.connect({
+  processBuffer: (data) => {
+    const buffer = new Uint8Array(data.buffer);
+
+    // Process buffer
+    for (let i = 0; i < buffer.length; i++) {
+      buffer[i] = buffer[i] * 2;
+    }
+
+    // Return with transfer
+    return withTransferable(t => ({
+      result: t(buffer.buffer),
+      processed: buffer.length
+    }));
+  }
+});
+```
+
+### Error Handling
+
+#### Method Throws Error
+
+```javascript
+const connection = await guest.connect({
+  divide: (a, b) => {
+    if (b === 0) {
+      throw new Error('Division by zero');
+    }
+    return a / b;
+  }
+});
+
+// Error is sent to host as RPC_REJECT
+// Host's promise will reject with the error
+```
+
+#### Async Error
+
+```javascript
+const connection = await guest.connect({
+  fetchData: async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.json();
+  }
+});
+
+// Async errors are caught and sent to host
+```
+
+#### Connection Error
+
+```javascript
+try {
+  const connection = await guest.connect({
+    // ... methods
+  });
+} catch (error) {
+  console.error('Connection failed:', error);
+}
+
+// Connection can fail if:
+// - Host never responds (timeout)
+// - Invalid configuration
+// - Host rejects connection
+```
+
+### Best Practices
+
+#### 1. Always Export Methods
+
+```javascript
+//  Good: Expose specific methods
+const connection = await guest.connect({
+  processData: (data) => process(data),
+  calculate: (x) => x * 2
+});
+
+//  Bad: Export entire object (includes internals)
+const connection = await guest.connect(myObject);
+```
+
+#### 2. Use onConnectionSetup for Initialization
+
+```javascript
+//  Good: Load config during setup
+const connection = await guest.connect(schema, {
+  onConnectionSetup: async (remote) => {
+    config = await remote.getConfig();
+  }
+});
+
+//  Bad: Load config after connection
+const connection = await guest.connect(schema);
+config = await connection.remote.getConfig(); // Extra delay
+```
+
+#### 3. Validate Input
+
+```javascript
+const connection = await guest.connect({
+  processData: (data) => {
+    // Validate input
+    if (!Array.isArray(data)) {
+      throw new Error('Data must be an array');
+    }
+
+    return data.map(x => x * 2);
+  }
+});
+```
+
+#### 4. Handle Errors Gracefully
+
+```javascript
+const connection = await guest.connect({
+  fetchData: async (url) => {
+    try {
+      const response = await fetch(url);
+      return response.json();
+    } catch (error) {
+      // Log error locally
+      console.error('Fetch failed:', error);
+      // Return meaningful error to host
+      throw new Error(`Failed to fetch from ${url}`);
+    }
+  }
+});
+```
+
+#### 5. Use TypeScript
+
+```typescript
+interface GuestSchema {
+  processData: (data: number[]) => Promise<number[]>;
+}
+
+interface HostSchema {
+  log: (msg: string) => void;
+}
+
+const connection = await guest.connect<GuestSchema, HostSchema>({
+  processData: async (data) => data.map(x => x * 2)
+});
+```
+
+### Performance Tips
+
+#### 1. Minimize onConnectionSetup Time
+
+```javascript
+//  Slow: Lots of work during setup
+onConnectionSetup: async (remote) => {
+  await loadLargeDataset(); // Delays connection
+  await initializeEverything(); // Takes long time
+}
+
+//  Fast: Only essential initialization
+onConnectionSetup: async (remote) => {
+  config = await remote.getConfig(); // Quick
+}
+```
+
+#### 2. Batch Host Calls
+
+```javascript
+//  Slow: Many separate calls
+for (const item of items) {
+  await remote.log(item);
+}
+
+//  Fast: Single batched call
+await remote.logBatch(items);
+```
+
+#### 3. Use Transferables for Large Data
+
+```javascript
+const connection = await guest.connect({
+  processImage: (imageData) => {
+    // Process...
+
+    // Return with transfer
+    return withTransferable(t => t(result.buffer));
+  }
+});
+```
+
+### Context Detection
+
+postbridge automatically detects the host target:
+
+```javascript
+// Web Worker
+// Detected: self
+
+// iframe
+// Detected: window.parent
+
+// Node.js Worker
+// Detected: parentPort
+
+// Usually no need to specify hostTarget
+const connection = await guest.connect(schema);
+```
+
+### Comparison: guest.connect() vs host.connect()
+
+| Aspect | guest.connect() | host.connect() |
+|--------|----------------|----------------|
+| **Who calls** | Child context | Parent context |
+| **Who initiates** | Guest sends request | Host waits for request |
+| **Parameters** | schema, options | guest, schema |
+| **Auto-detect** | Auto-detects host | Receives guest explicitly |
+| **Connection ID** | Assigned by host | Generated by host |
+| **Multiple connections** | One per guest | Many guests |
+
+### Summary
+
+**guest.connect():**
+- Called by guest (worker, iframe) to connect to host
+- Auto-detects host target
+- Supports `onConnectionSetup` for initialization
+- Returns Connection with `remote`, `close`, and `id`
+- Always call `close()` when done
+
+**Key features:**
+- Simple one-line connection
+- Bidirectional RPC support
+- Type-safe with TypeScript
+- Auto-detection of host
+- Initialization hook
+
+**Next steps:**
+- [host.connect()](?path=/docs/api-reference-host-api--docs) - Host-side connection
+- [Connection Object](?path=/docs/api-reference-connection--docs) - Connection details
+- [Web Workers Guide](?path=/docs/guides-web-workers--docs) - Worker patterns
+- [Examples](?path=/docs/examples-image-processing--docs) - Real-world code

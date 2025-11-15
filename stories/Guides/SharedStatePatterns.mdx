@@ -1,0 +1,268 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Shared State Patterns" />
+
+# Shared State Patterns in Bridge
+
+> **Quick Links**:
+>
+> - New to this problem? See [Troubleshooting Multi-Writer Issues](?path=/docs/guides-troubleshooting-multi-writer--docs) for a quick fix playbook
+> - Want comprehensive context? Read [Understanding Shared State in Bridge](?path=/docs/guides-understanding-shared-state--docs)
+
+## The Multi-Writer Problem
+
+Bridge differs from traditional PostBridge RPC in one critical way: **multiple tabs can write to shared state simultaneously**. This creates race conditions that don't exist in 1:1 iframe communication.
+
+### What Goes Wrong
+
+```typescript
+//  ANTI-PATTERN: Function mutates shared state
+const schema = {
+  counter: 0,
+
+  increment: (remote) => {
+    remote.counter++; // Each tab executes this!
+    return remote.counter;
+  },
+};
+
+// Tab A calls increment() when counter = 0
+// → Tab A: counter becomes 1 
+// → Tab A broadcasts to other tabs
+
+// Tab B receives broadcast and executes increment()
+// → Tab B reads counter = 1 (from state sync)
+// → Tab B executes remote.counter++ → counter becomes 2 
+// → Now tabs are out of sync!
+```
+
+**What happened:**
+
+1. Tab A increments locally: `0 → 1`
+2. Tab A's state change propagates: all tabs now have `counter = 1`
+3. Tab B receives the function broadcast and **executes increment again**: `1 → 2`
+4. Result: Inconsistent state across tabs
+
+This is a **known limitation** of multi-writer scenarios, not a bug. It's how distributed systems work when multiple nodes can mutate shared state.
+
+---
+
+## Pattern 1: Read-Only Shared State (Recommended)
+
+**Use Case:** Initial state, configuration, or data that new tabs need to "catch up" on.
+
+```typescript
+const schema = {
+  //  Shared variables: Read-only or set by external source
+  currentUser: { name: "Alice", id: 123 },
+  settings: { theme: "dark", notifications: true },
+
+  //  Functions operate on LOCAL state, not shared state
+  displayWelcome: (remote) => {
+    console.log(`Welcome ${remote.currentUser.name}!`);
+    return remote.currentUser.name;
+  },
+};
+```
+
+**When this works:**
+
+- State is set once (e.g., on login) and read by all tabs
+- New tabs catch up on current state automatically
+- Functions read state but don't mutate it
+
+---
+
+## Pattern 2: Single Source of Truth
+
+**Use Case:** One tab owns the data, others are observers.
+
+```typescript
+const schema = {
+  score: 0,
+
+  //  Use a "command" pattern - only caller mutates
+  updateScore: (newScore, remote) => {
+    // Only the calling tab's newScore matters
+    remote.score = newScore;
+    return newScore;
+  },
+};
+
+// Tab A (owner) decides the score
+await conn.remote.updateScore(42);
+
+// Tab B receives broadcast and its score updates to 42
+// (but doesn't compute a new score itself)
+```
+
+**When this works:**
+
+- Clear ownership: One tab drives the state
+- Other tabs are passive observers
+- Use explicit values, not mutations (`set` instead of `++`)
+
+---
+
+## Pattern 3: Event Broadcasting (No Shared State)
+
+**Use Case:** Notify all tabs of actions without shared state.
+
+```typescript
+const schema = {
+  //  No shared variables!
+
+  //  Functions just notify, don't share state
+  userLoggedIn: (userId, remote) => {
+    console.log(`User ${userId} logged in`);
+    // Each tab handles this independently
+    fetchUserData(userId);
+  },
+
+  tabClosed: (tabId, remote) => {
+    console.log(`Tab ${tabId} closed`);
+  },
+};
+```
+
+**When this works:**
+
+- Pure event broadcasting
+- Each tab maintains its own local state
+- No shared variables = no race conditions
+
+---
+
+## Pattern 4: Last-Writer-Wins (Advanced)
+
+**Use Case:** Collaborative editing where eventual consistency is acceptable.
+
+```typescript
+const schema = {
+  document: { text: "", lastModified: 0 },
+
+  //  Include timestamps for conflict resolution
+  updateDocument: (text, timestamp, remote) => {
+    if (timestamp > remote.document.lastModified) {
+      remote.document = { text, lastModified: timestamp };
+    }
+    return remote.document;
+  },
+};
+
+// Each tab includes timestamp
+await conn.remote.updateDocument("new text", Date.now());
+```
+
+**When this works:**
+
+- Timestamps or version numbers resolve conflicts
+- Eventual consistency is acceptable
+- You understand distributed systems tradeoffs
+
+---
+
+## Anti-Patterns to Avoid
+
+###  Increment/Decrement on Shared State
+
+```typescript
+// BAD: Each tab will execute the increment
+const schema = {
+  counter: 0,
+  increment: (remote) => remote.counter++, //  Multi-writer problem!
+};
+```
+
+**Why it fails:** Every tab executes the increment, causing double/triple increments.
+
+**Fix:** Use Pattern 2 (explicit values) or Pattern 3 (no shared state):
+
+```typescript
+// GOOD: Caller decides the new value
+const schema = {
+  counter: 0,
+  setCounter: (newValue, remote) => (remote.counter = newValue),
+};
+
+// Or: No shared state, just events
+const schema = {
+  counterChanged: (newValue, remote) => {
+    // Each tab maintains its own counter
+    localCounter = newValue;
+  },
+};
+```
+
+---
+
+###  Shared Arrays/Objects Without Ownership
+
+```typescript
+// BAD: Multiple tabs pushing to the same array
+const schema = {
+  items: [],
+  addItem: (item, remote) => {
+    remote.items.push(item); //  Each tab pushes!
+  },
+};
+```
+
+**Why it fails:** Each tab's `push` executes, duplicating items.
+
+**Fix:** Use explicit replacement or unique IDs:
+
+```typescript
+// GOOD: Replace entire array (caller's version wins)
+const schema = {
+  items: [],
+  setItems: (newItems, remote) => {
+    remote.items = newItems;
+  },
+};
+
+// Or: Use a Set with unique IDs
+const schema = {
+  items: new Map(),
+  addItem: (id, item, remote) => {
+    remote.items.set(id, item); // Idempotent!
+  },
+};
+```
+
+---
+
+## Decision Matrix
+
+| Your Use Case                  | Recommended Pattern            | Notes                              |
+| ------------------------------ | ------------------------------ | ---------------------------------- |
+| Initial app state for new tabs | Pattern 1 (Read-Only)          | Perfect for config, user data      |
+| One tab controls state         | Pattern 2 (Single Source)      | Clear ownership                    |
+| Just notify tabs of events     | Pattern 3 (Event Broadcasting) | Simplest, no race conditions       |
+| Collaborative editing          | Pattern 4 (Last-Writer-Wins)   | Requires conflict resolution       |
+| Counter/accumulator            |  Use Local State             | Or use a server as source of truth |
+
+---
+
+## Comparison: 1:1 vs 1:N Communication Patterns
+
+| Aspect              | 1:1 Pattern (host/guest)    | 1:N Pattern (cross-tab)        |
+| ------------------- | --------------------------- | ------------------------------- |
+| **Use Case**        | iframe/worker communication | SharedWorker multi-tab sync     |
+| **Writers**         | 1:1 (host ↔ guest)         | N:N (all tabs)                  |
+| **Mutations**       |  Safe (single writer)      | Race conditions possible     |
+| **State sync**      | Bidirectional               | Broadcast to all                |
+| **Recommended for** | Bidirectional RPC           | Event broadcasting, read-only state |
+
+---
+
+## Summary
+
+**Golden Rules:**
+
+1. **Shared variables are best for read-only state** that new tabs catch up on
+2. **Shared functions should avoid mutating shared state** unless you use explicit values
+3. **When in doubt, use local state** and broadcast events instead
+4. **Think like a distributed system**: Multiple writers = race conditions
+
+**Remember:** This isn't a limitation - it's the reality of distributed computing. Bridge gives you the tools; you choose the pattern that fits your use case.

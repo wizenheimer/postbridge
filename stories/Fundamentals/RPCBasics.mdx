@@ -1,0 +1,395 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Fundamentals/RPC Basics" />
+
+# What are RPCs?
+
+RPC stands for **Remote Procedure Call**. It's a programming pattern that allows code running in one execution context to call functions (procedures) that exist in another execution context, as if they were local functions.
+
+## The Problem RPC Solves
+
+### Scenario: Isolated JavaScript Contexts
+
+Modern JavaScript runs in multiple isolated contexts:
+
+```
+┌─────────────────┐
+│   Main Thread   │  ← Has access to DOM, window object
+└─────────────────┘
+
+┌─────────────────┐
+│   Web Worker    │  ← NO access to DOM, isolated global scope
+└─────────────────┘
+
+┌─────────────────┐
+│     iframe      │  ← Sandboxed, different origin possible
+└─────────────────┘
+```
+
+These contexts **cannot directly call each other's functions** due to security and design constraints:
+
+```javascript
+//  This doesn't work
+// Main thread trying to call worker function directly
+worker.someFunction(); // TypeError: worker.someFunction is not a function
+
+//  This also doesn't work
+// Worker trying to access main thread function
+window.mainThreadFunction(); // ReferenceError: window is not defined
+```
+
+### The Traditional Solution: postMessage
+
+JavaScript provides `postMessage()` for cross-context communication:
+
+```javascript
+// Main thread
+worker.postMessage({ action: 'calculate', data: [1, 2, 3] });
+worker.addEventListener('message', (event) => {
+  console.log('Result:', event.data); // { result: 6 }
+});
+
+// Worker
+self.addEventListener('message', (event) => {
+  if (event.data.action === 'calculate') {
+    const sum = event.data.data.reduce((a, b) => a + b, 0);
+    self.postMessage({ result: sum });
+  }
+});
+```
+
+**Problems with raw postMessage:**
+1. **Verbose** - Lots of boilerplate code
+2. **Manual message routing** - You have to check `action` types yourself
+3. **No type safety** - Easy to make mistakes
+4. **Callback hell** - Matching requests with responses is manual
+5. **Not intuitive** - Doesn't feel like normal function calls
+
+### The RPC Solution
+
+RPC libraries like postbridge abstract away postMessage complexity. It enables you to call functions in other contexts as if they were local functions:
+
+```javascript
+// Main thread
+const connection = await host.connect(worker, {});
+
+// This appears to be a local function call, but it's actually a remote function call.
+// The execution happens in the worker or iframe.
+const sum = await connection.remote.calculate([1, 2, 3]);
+
+// The result is returned to the main thread.
+console.log('Result:', sum); // 6
+
+// Worker thread or iframe
+const connection = await guest.connect({
+  calculate: (numbers) => numbers.reduce((a, b) => a + b, 0)
+});
+```
+
+**Benefits:**
+1.  **Feels natural** - Just like calling a local function
+2.  **Async by default** - Returns Promises automatically
+3.  **Type safe** - Full TypeScript support
+4.  **Automatic routing** - Messages matched to calls automatically
+5.  **Less code** - No manual event listeners or action types
+
+## How RPC Works
+
+RPC creates an **illusion** that remote functions are local. Here's how:
+
+### 1. Schema Definition
+
+Both sides define what functions they expose:
+
+```javascript
+// Host schema
+{
+  greet: (name) => `Hello, ${name}!`,
+  getTime: () => new Date().toISOString()
+}
+
+// Guest schema
+{
+  calculate: (a, b) => a + b,
+  process: (data) => data.map(x => x * 2)
+}
+```
+
+### 2. Connection & Handshake
+
+When connecting, both sides:
+1. Exchange their schemas
+2. Create **proxy functions** for the remote methods
+3. Set up **event listeners** for incoming calls
+
+```
+Host                           Guest
+  │                              │
+  │──── HANDSHAKE_REQUEST ──────→│
+  │                              │
+  │←─── HANDSHAKE_REPLY ─────────│
+  │  (includes guest methods)    │
+  │                              │
+  │──── HANDSHAKE_REPLY ────────→│
+  │  (includes host methods)     │
+  │                              │
+   Connected!                    Connected!
+```
+
+### 3. Proxy Functions
+
+The `remote` object contains **proxy functions** that look like real functions but actually send messages:
+
+```javascript
+// When you call:
+const result = await connection.remote.calculate(5, 3);
+
+// Behind the scenes:
+// 1. Generate unique callID
+// 2. Send message: { action: 'RPC_REQUEST', callID: 'abc', method: 'calculate', args: [5, 3] }
+// 3. Wait for response message with matching callID
+// 4. Return the result
+```
+
+### 4. Request/Response Flow
+
+**Complete RPC call flow:**
+
+```
+Host                                    Guest
+  │                                       │
+  │ await remote.calculate(5, 3)          │
+  │                                       │
+  │─── RPC_REQUEST ─────────────────────→ │
+  │    { callID: 'abc',                   │
+  │      method: 'calculate',             │
+  │      args: [5, 3] }                   │
+  │                                       │
+  │                        Execute: calculate(5, 3)
+  │                        Result: 8
+  │                                       │
+  │←── RPC_RESOLVE ────────────────────── │
+  │    { callID: 'abc',                   │
+  │      result: 8 }                      │
+  │                                       │
+  │ Promise resolves with: 8              │
+```
+
+### 5. Error Handling
+
+If the remote function throws an error:
+
+```
+Host                                    Guest
+  │                                       │
+  │ await remote.divide(10, 0)            │
+  │                                       │
+  │─── RPC_REQUEST ─────────────────────→ │
+  │    { callID: 'xyz',                   │
+  │      method: 'divide',                │
+  │      args: [10, 0] }                  │
+  │                                       │
+  │                        Execute: divide(10, 0)
+  │                        Throws: Error('Division by zero!')
+  │                                       │
+  │←── RPC_REJECT ─────────────────────── │
+  │    { callID: 'xyz',                   │
+  │      error: 'Division by zero!' }     │
+  │                                       │
+  │ Promise rejects with error            │
+```
+
+## RPC vs Direct Function Calls
+
+### Local Function Call
+```javascript
+function add(a, b) {
+  return a + b;
+}
+
+const result = add(5, 3); // Synchronous, immediate
+console.log(result); // 8
+```
+
+### RPC Call
+```javascript
+// Looks similar, but...
+const result = await connection.remote.add(5, 3); // Asynchronous, takes time
+console.log(result); // 8
+
+// Behind the scenes:
+// 1. Serialize arguments (5, 3)
+// 2. Send message across context boundary
+// 3. Wait for execution in remote context
+// 4. Wait for response message
+// 5. Deserialize result (8)
+// 6. Resolve promise
+```
+
+**Key Differences:**
+
+| Aspect | Local Call | RPC Call |
+|--------|-----------|----------|
+| **Speed** | Nanoseconds | Milliseconds |
+| **Execution** | Same context | Different context |
+| **Timing** | Synchronous | Always async |
+| **Data** | Direct access | Must be serializable |
+| **Errors** | Try/catch | Promise rejection |
+
+## Types of RPC
+
+### Unidirectional RPC
+Only one side calls the other:
+
+```javascript
+// Host calls guest (one direction only)
+await connection.remote.processData(data);
+```
+
+### Bidirectional RPC
+Both sides can call each other:
+
+```javascript
+// Host
+const connection = await host.connect(worker, {
+  log: (msg) => console.log(msg)
+});
+await connection.remote.process(data);
+
+// Guest
+const connection = await guest.connect({
+  process: async (data) => {
+    await connection.remote.log('Processing...');
+    return processData(data);
+  }
+});
+```
+
+postbridge supports **bidirectional RPC** by default!
+
+## Data Serialization
+
+RPC calls must serialize (convert to transmittable format) arguments and results.
+
+### What Can Be Sent
+
+ **Serializable:**
+- Primitives: numbers, strings, booleans, null, undefined
+- Arrays and objects (plain)
+- Dates, RegExp
+- ArrayBuffer, TypedArrays
+- Transferable objects (with special handling)
+
+ **Not Serializable:**
+- Functions
+- DOM nodes
+- Symbols
+- Objects with circular references
+- Class instances (methods lost)
+
+### Example
+
+```javascript
+//  Works
+await connection.remote.process({
+  numbers: [1, 2, 3],
+  config: { enabled: true, timeout: 5000 },
+  buffer: new ArrayBuffer(1024)
+});
+
+//  Doesn't work
+await connection.remote.process({
+  callback: () => console.log('done'), // Function
+  element: document.body, // DOM node
+  circular: obj // obj.ref = obj (circular)
+});
+```
+
+## RPC Performance Considerations
+
+### Overhead
+Each RPC call has overhead:
+1. **Serialization** - Converting arguments to transmittable format
+2. **Message passing** - Sending data across context boundary
+3. **Deserialization** - Converting back to JavaScript values
+4. **Promise resolution** - Async coordination
+
+### When to Use RPC
+
+**Good use cases:**
+- CPU-intensive calculations (offload to worker)
+- Large data processing (parallel processing)
+- Isolating untrusted code (sandboxed iframes)
+- Background tasks (don't block main thread)
+
+**Poor use cases:**
+- Very frequent small calls (overhead dominates)
+- When data is too large to serialize quickly
+- When immediate synchronous results are needed
+
+### Optimization: Batching
+
+Instead of many small calls:
+```javascript
+//  Slow: 1000 RPC calls
+for (let i = 0; i < 1000; i++) {
+  await connection.remote.process(items[i]);
+}
+
+//  Fast: 1 RPC call
+await connection.remote.processBatch(items);
+```
+
+### Optimization: Transferables
+
+For large binary data, use transferables (zero-copy):
+```javascript
+import { withTransferable } from 'postbridge';
+
+const buffer = new ArrayBuffer(10 * 1024 * 1024); // 10MB
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+// buffer is now "transferred" (empty), but no copy was made!
+```
+
+## RPC in postbridge
+
+postbridge implements RPC with several enhancements:
+
+1. **Bidirectional** - Both sides are equal peers
+2. **Type-safe** - Full TypeScript support
+3. **Multiple connections** - One host, many guests
+4. **Nested APIs** - Organize methods in namespaces
+5. **Transferables** - Efficient binary data transfer
+6. **Error propagation** - Errors throw as if local
+7. **Promise-based** - Natural async/await syntax
+
+## Summary
+
+**RPC is:**
+- A pattern for calling functions across execution contexts
+- An abstraction over postMessage
+- Always asynchronous
+- Based on message serialization
+
+**RPC provides:**
+- Natural function call syntax
+- Automatic message routing
+- Type safety
+- Error handling
+- Less boilerplate code
+
+**RPC requires:**
+- Serializable data
+- Async/await syntax
+- Understanding of performance overhead
+
+**Next steps:**
+- Learn about [postMessage API](?path=/docs/fundamentals-postmessage-api--docs) - The foundation of RPC
+- Understand [JavaScript Contexts](?path=/docs/fundamentals-javascript-contexts--docs) - Where RPC runs
+- Review [Security Model](?path=/docs/fundamentals-security--docs) - How postbridge stays safe
+
+---
+
+Now that you understand RPC concepts, you're ready to dive deeper into how postbridge implements these patterns!

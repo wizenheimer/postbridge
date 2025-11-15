@@ -1,0 +1,721 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Node.js Workers" />
+
+# Node.js Worker Threads Guide
+
+Complete guide to using postbridge with Node.js Worker Threads for parallel processing on the server.
+
+## What are Worker Threads?
+
+Worker Threads are Node.js's solution for CPU-intensive tasks. They provide true parallelism without blocking the event loop.
+
+**Benefits:**
+- **True parallelism:** Utilize multiple CPU cores
+- **Non-blocking:** Main thread stays responsive
+- **Shared memory:** Optional via SharedArrayBuffer
+- **Module support:** Can require() npm packages
+
+**Use cases:**
+- Data processing pipelines
+- Image/video processing
+- Cryptography
+- Report generation
+- Machine learning inference
+- Large file parsing
+
+## Installation
+
+Worker Threads are built into Node.js 12+:
+
+```bash
+# No installation needed for Node.js 12+
+node --version  # Should be >= 12.0.0
+```
+
+## Basic Setup
+
+### 1. Create Worker File
+
+**worker.js:**
+```javascript
+const { parentPort } = require('worker_threads');
+const { guest } = require('postbridge');
+
+async function main() {
+  const connection = await guest.connect({
+    // Methods main thread can call
+    processData: (data) => {
+      return data.map(x => x * 2);
+    },
+
+    calculatePrimes: (max) => {
+      const primes = [];
+      for (let i = 2; i <= max; i++) {
+        if (isPrime(i)) primes.push(i);
+      }
+      return primes;
+    }
+  });
+
+  console.log('Worker ready');
+}
+
+function isPrime(n) {
+  for (let i = 2; i <= Math.sqrt(n); i++) {
+    if (n % i === 0) return false;
+  }
+  return true;
+}
+
+main().catch(console.error);
+```
+
+### 2. Create Main File
+
+**main.js:**
+```javascript
+const { Worker } = require('worker_threads');
+const { host } = require('postbridge');
+
+async function main() {
+  // Create worker
+  const worker = new Worker('./worker.js');
+
+  // Connect
+  const connection = await host.connect(worker, {
+    log: (message) => {
+      console.log('[Worker]:', message);
+    }
+  });
+
+  // Call worker methods
+  const doubled = await connection.remote.processData([1, 2, 3, 4, 5]);
+  console.log('Doubled:', doubled); // [2, 4, 6, 8, 10]
+
+  const primes = await connection.remote.calculatePrimes(100);
+  console.log('Primes:', primes);
+
+  // Cleanup
+  connection.close();
+}
+
+main().catch(console.error);
+```
+
+### 3. Run
+
+```bash
+node main.js
+```
+
+## ES Modules Support
+
+### Using ES Modules
+
+**worker.mjs:**
+```javascript
+import { parentPort } from 'worker_threads';
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  processData: (data) => data.map(x => x * 2)
+});
+```
+
+**main.mjs:**
+```javascript
+import { Worker } from 'worker_threads';
+import { host } from 'postbridge';
+
+const worker = new Worker('./worker.mjs');
+const connection = await host.connect(worker, {});
+```
+
+**package.json:**
+```json
+{
+  "type": "module"
+}
+```
+
+## Practical Examples
+
+### Example 1: File Processing
+
+**worker.js:**
+```javascript
+const { parentPort } = require('worker_threads');
+const { guest } = require('postbridge');
+const fs = require('fs').promises;
+
+const connection = await guest.connect({
+  processFile: async (filePath, remote) => {
+    // Read file
+    await remote.log(`Reading ${filePath}...`);
+    const content = await fs.readFile(filePath, 'utf8');
+
+    // Process line by line
+    const lines = content.split('\n');
+    const results = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      results.push(processLine(lines[i]));
+
+      // Report progress
+      if (i % 1000 === 0) {
+        await remote.updateProgress(i, lines.length);
+      }
+    }
+
+    await remote.log('Processing complete');
+    return results;
+  }
+});
+
+function processLine(line) {
+  // Your processing logic
+  return line.toUpperCase();
+}
+```
+
+**main.js:**
+```javascript
+const { Worker } = require('worker_threads');
+const { host } = require('postbridge');
+
+const worker = new Worker('./worker.js');
+
+const connection = await host.connect(worker, {
+  log: (msg) => console.log(msg),
+  updateProgress: (current, total) => {
+    const percent = ((current / total) * 100).toFixed(1);
+    process.stdout.write(`\rProgress: ${percent}%`);
+  }
+});
+
+const results = await connection.remote.processFile('./large-file.txt');
+console.log('\nProcessed', results.length, 'lines');
+
+connection.close();
+```
+
+### Example 2: Image Processing
+
+**image-worker.js:**
+```javascript
+const { guest } = require('postbridge');
+const sharp = require('sharp');
+
+const connection = await guest.connect({
+  resizeImage: async (inputPath, outputPath, width, height) => {
+    await sharp(inputPath)
+      .resize(width, height)
+      .toFile(outputPath);
+
+    return { success: true, outputPath };
+  },
+
+  convertFormat: async (inputPath, outputPath, format) => {
+    await sharp(inputPath)
+      .toFormat(format)
+      .toFile(outputPath);
+
+    return { success: true, format };
+  },
+
+  generateThumbnails: async (inputPath, sizes) => {
+    const results = [];
+
+    for (const size of sizes) {
+      const outputPath = `thumbnail-${size.width}x${size.height}.jpg`;
+      await sharp(inputPath)
+        .resize(size.width, size.height)
+        .toFile(outputPath);
+
+      results.push(outputPath);
+    }
+
+    return results;
+  }
+});
+```
+
+**main.js:**
+```javascript
+const { Worker } = require('worker_threads');
+const { host } = require('postbridge');
+
+async function processImages(imagePaths) {
+  const worker = new Worker('./image-worker.js');
+  const connection = await host.connect(worker, {});
+
+  try {
+    for (const imagePath of imagePaths) {
+      // Generate thumbnails
+      const thumbnails = await connection.remote.generateThumbnails(imagePath, [
+        { width: 150, height: 150 },
+        { width: 300, height: 300 },
+        { width: 600, height: 600 }
+      ]);
+
+      console.log('Generated:', thumbnails);
+    }
+  } finally {
+    connection.close();
+  }
+}
+
+processImages(['photo1.jpg', 'photo2.jpg']);
+```
+
+### Example 3: Worker Pool
+
+**worker-pool.js:**
+```javascript
+const { Worker } = require('worker_threads');
+const { host } = require('postbridge');
+
+class WorkerPool {
+  constructor(workerScript, schema, size = 4) {
+    this.workerScript = workerScript;
+    this.schema = schema;
+    this.size = size;
+    this.connections = [];
+    this.available = [];
+    this.queue = [];
+  }
+
+  async init() {
+    const promises = [];
+
+    for (let i = 0; i < this.size; i++) {
+      const worker = new Worker(this.workerScript);
+
+      const promise = host.connect(worker, this.schema).then(conn => {
+        this.connections.push(conn);
+        this.available.push(conn);
+        return conn;
+      });
+
+      promises.push(promise);
+    }
+
+    await Promise.all(promises);
+  }
+
+  async execute(method, ...args) {
+    // Get available connection
+    const conn = await this.getConnection();
+
+    try {
+      return await conn.remote[method](...args);
+    } finally {
+      // Return to pool
+      this.releaseConnection(conn);
+    }
+  }
+
+  async getConnection() {
+    if (this.available.length > 0) {
+      return this.available.pop();
+    }
+
+    // Wait for connection to become available
+    return new Promise((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  releaseConnection(conn) {
+    if (this.queue.length > 0) {
+      const resolve = this.queue.shift();
+      resolve(conn);
+    } else {
+      this.available.push(conn);
+    }
+  }
+
+  async close() {
+    this.connections.forEach(conn => conn.close());
+    this.connections = [];
+    this.available = [];
+    this.queue = [];
+  }
+}
+
+module.exports = { WorkerPool };
+
+// Usage:
+async function main() {
+  const pool = new WorkerPool('./worker.js', {
+    log: (msg) => console.log(msg)
+  }, 4);
+
+  await pool.init();
+
+  // Process 100 items in parallel
+  const items = Array.from({ length: 100 }, (_, i) => i);
+
+  const results = await Promise.all(
+    items.map(item => pool.execute('processItem', item))
+  );
+
+  console.log('Processed', results.length, 'items');
+
+  await pool.close();
+}
+
+main();
+```
+
+### Example 4: Data Pipeline
+
+**pipeline.js:**
+```javascript
+const { Worker } = require('worker_threads');
+const { host } = require('postbridge');
+
+class DataPipeline {
+  constructor() {
+    this.stages = [];
+  }
+
+  addStage(workerScript, schema) {
+    this.stages.push({ workerScript, schema });
+    return this;
+  }
+
+  async process(data) {
+    let result = data;
+
+    for (const stage of this.stages) {
+      const worker = new Worker(stage.workerScript);
+      const connection = await host.connect(worker, stage.schema || {});
+
+      try {
+        result = await connection.remote.process(result);
+      } finally {
+        connection.close();
+      }
+    }
+
+    return result;
+  }
+}
+
+// Usage:
+async function main() {
+  const pipeline = new DataPipeline()
+    .addStage('./extract-worker.js', {})
+    .addStage('./transform-worker.js', {})
+    .addStage('./load-worker.js', {});
+
+  const result = await pipeline.process({ file: 'data.csv' });
+  console.log('Pipeline result:', result);
+}
+
+main();
+```
+
+**extract-worker.js:**
+```javascript
+const { guest } = require('postbridge');
+const fs = require('fs').promises;
+
+await guest.connect({
+  process: async ({ file }) => {
+    const content = await fs.readFile(file, 'utf8');
+    const rows = content.split('\n').map(line => line.split(','));
+    return { rows };
+  }
+});
+```
+
+**transform-worker.js:**
+```javascript
+const { guest } = require('postbridge');
+
+await guest.connect({
+  process: ({ rows }) => {
+    const transformed = rows.map(row => ({
+      id: parseInt(row[0]),
+      name: row[1].toUpperCase(),
+      value: parseFloat(row[2])
+    }));
+    return { transformed };
+  }
+});
+```
+
+**load-worker.js:**
+```javascript
+const { guest } = require('postbridge');
+const db = require('./database');
+
+await guest.connect({
+  process: async ({ transformed }) => {
+    await db.bulkInsert(transformed);
+    return { inserted: transformed.length };
+  }
+});
+```
+
+## Worker Communication
+
+### Passing Worker Data
+
+```javascript
+const { Worker } = require('worker_threads');
+
+// Pass data during creation
+const worker = new Worker('./worker.js', {
+  workerData: {
+    config: { apiKey: 'abc123' },
+    mode: 'production'
+  }
+});
+
+// In worker:
+const { workerData } = require('worker_threads');
+console.log(workerData.config.apiKey); // 'abc123'
+```
+
+### Environment Variables
+
+```javascript
+// Main thread
+const worker = new Worker('./worker.js', {
+  env: {
+    ...process.env,
+    CUSTOM_VAR: 'value'
+  }
+});
+
+// Worker thread
+console.log(process.env.CUSTOM_VAR); // 'value'
+```
+
+### Shared Memory
+
+```javascript
+// Main thread
+const sharedBuffer = new SharedArrayBuffer(1024);
+const sharedArray = new Int32Array(sharedBuffer);
+
+const worker = new Worker('./worker.js', {
+  workerData: { sharedBuffer }
+});
+
+// Write to shared memory
+sharedArray[0] = 42;
+
+// Worker thread
+const { workerData } = require('worker_threads');
+const sharedArray = new Int32Array(workerData.sharedBuffer);
+console.log(sharedArray[0]); // 42
+```
+
+## Performance Tips
+
+### 1. Pool Workers
+
+```javascript
+//  Slow: Create worker for each task
+for (const task of tasks) {
+  const worker = new Worker('./worker.js');
+  await processTask(worker, task);
+  worker.terminate();
+}
+
+//  Fast: Reuse workers via pool
+const pool = new WorkerPool('./worker.js', {}, 4);
+await pool.init();
+for (const task of tasks) {
+  await pool.execute('process', task);
+}
+pool.close();
+```
+
+### 2. Minimize Data Transfer
+
+```javascript
+//  Slow: Send large data repeatedly
+for (const item of items) {
+  await connection.remote.process(item, largeConfig);
+}
+
+//  Fast: Send config once during initialization
+const connection = await guest.connect({
+  process: (item) => processWithConfig(item, config)
+}, {
+  onConnectionSetup: async (remote) => {
+    config = await remote.getConfig();
+  }
+});
+```
+
+### 3. Use Transferables
+
+```javascript
+const { withTransferable } = require('postbridge');
+
+// Transfer ArrayBuffer (zero-copy)
+const buffer = Buffer.alloc(10 * 1024 * 1024);
+await connection.remote.process(
+  withTransferable(t => t(buffer.buffer))
+);
+```
+
+## Error Handling
+
+### Worker Errors
+
+```javascript
+const worker = new Worker('./worker.js');
+
+worker.on('error', (error) => {
+  console.error('Worker error:', error);
+});
+
+worker.on('exit', (code) => {
+  if (code !== 0) {
+    console.error('Worker stopped with exit code', code);
+  }
+});
+
+const connection = await host.connect(worker, {});
+```
+
+### Unhandled Rejections in Worker
+
+```javascript
+// In worker.js
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection in worker:', reason);
+  process.exit(1);
+});
+```
+
+### Graceful Shutdown
+
+```javascript
+const worker = new Worker('./worker.js');
+const connection = await host.connect(worker, {});
+
+process.on('SIGTERM', () => {
+  console.log('Shutting down...');
+  connection.close();
+  process.exit(0);
+});
+```
+
+## Resource Management
+
+### Memory Usage
+
+```javascript
+// Worker memory is separate from main thread
+console.log(process.memoryUsage());
+// {
+//   rss: 50MB,      // Resident set size
+//   heapTotal: 10MB,
+//   heapUsed: 8MB,
+//   external: 1MB
+// }
+```
+
+### CPU Utilization
+
+```javascript
+const os = require('os');
+
+// Optimal pool size = CPU cores
+const poolSize = os.cpus().length;
+const pool = new WorkerPool('./worker.js', {}, poolSize);
+```
+
+### Worker Lifecycle
+
+```javascript
+// Create
+const worker = new Worker('./worker.js');
+
+// Use
+const connection = await host.connect(worker, {});
+await connection.remote.doWork();
+
+// Cleanup
+connection.close(); // Terminates worker
+
+// Or manually terminate
+worker.terminate();
+```
+
+## Debugging
+
+### Enable Inspector
+
+```bash
+# Debug main thread
+node --inspect main.js
+
+# Debug worker
+node --inspect-brk main.js
+```
+
+### Console Logs
+
+Worker console.log appears in main thread's stdout:
+
+```javascript
+// In worker
+console.log('Worker log');
+// Appears in main thread console
+```
+
+### Performance Profiling
+
+```javascript
+const { performance } = require('perf_hooks');
+
+// In worker
+const start = performance.now();
+// Do work...
+const end = performance.now();
+console.log('Took', end - start, 'ms');
+```
+
+## Comparison: Worker Threads vs Cluster
+
+| Feature | Worker Threads | Cluster |
+|---------|----------------|---------|
+| **Purpose** | CPU-intensive tasks | Network servers |
+| **Memory** | Shared optional | Separate |
+| **Communication** | postMessage | IPC |
+| **Overhead** | Low | Higher |
+| **Use case** | Computation | Load balancing |
+
+## Best Practices
+
+1. **Match pool size to CPU cores**
+2. **Minimize data transfer size**
+3. **Use transferables for large data**
+4. **Handle worker errors**
+5. **Clean up connections**
+6. **Profile performance**
+7. **Monitor memory usage**
+
+## Summary
+
+- Worker Threads enable parallel processing in Node.js
+- postbridge makes worker communication simple
+- Use worker pools for efficiency
+- Minimize data transfer
+- Handle errors gracefully
+- Match pool size to CPU cores
+
+**Next steps:**
+- [Web Workers Guide](?path=/docs/guides-web-workers--docs) - Browser workers
+- [Transferables Guide](?path=/docs/guides-transferables--docs) - Efficient data transfer
+- [Examples](?path=/docs/examples-workers--docs) - More patterns

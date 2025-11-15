@@ -1,0 +1,558 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Architecture/Overview" />
+
+# Architecture Overview
+
+This document provides a high-level overview of postbridge's architecture, explaining how the library is structured and how components work together to enable seamless cross-context RPC.
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         USER CODE                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────────┐                  ┌──────────────────┐     │
+│  │   HOST (Parent)  │                  │   GUEST (Child)  │     │
+│  │                  │                  │                  │     │
+│  │  host.connect()  │◄────────────────►│  guest.connect() │     │
+│  │                  │   postMessage    │                  │     │
+│  └────────┬─────────┘                  └────────┬─────────┘     │
+│           │                                     │               │
+└───────────┼─────────────────────────────────────┼───────────────┘
+            │                                     │
+┌───────────┼─────────────────────────────────────┼─────────────┐
+│           │        postbridge LIBRARY           │             │
+├───────────┼─────────────────────────────────────┼─────────────┤
+│           │                                     │             │
+│  ┌────────▼────────┐                   ┌────────▼────────┐    │
+│  │  Host Module    │                   │  Guest Module   │    │
+│  │  - Connection   │                   │  - Connection   │    │
+│  │  - Validation   │                   │  - Auto-detect  │    │
+│  │  - Multi-guest  │                   │  - Setup hook   │    │
+│  └────────┬────────┘                   └────────┬────────┘    │
+│           │                                     │             │
+│           └─────────────┐   ┌───────────────────┘             │
+│                         │   │                                 │
+│                  ┌──────▼───▼──────┐                          │
+│                  │   RPC Engine    │                          │
+│                  │  - Proxy create │                          │
+│                  │  - Call routing │                          │
+│                  │  - Response map │                          │
+│                  │  - Transferable │                          │
+│                  └────────┬────────┘                          │
+│                           │                                   │
+│                  ┌────────▼────────┐                          │
+│                  │    Helpers      │                          │
+│                  │  - Environment  │                          │
+│                  │  - postMessage  │                          │
+│                  │  - Events       │                          │
+│                  └────────┬────────┘                          │
+│                           │                                   │
+└───────────────────────────┼───────────────────────────────────┘
+                            │
+┌───────────────────────────┼───────────────────────────────────┐
+│                           │                                   │
+│                  ┌────────▼────────┐                          │
+│                  │   postMessage   │                          │
+│                  │   Browser/Node  │                          │
+│                  │       API       │                          │
+│                  └─────────────────┘                          │
+│                                                               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+## Core Components
+
+### 1. Host Module (`host.ts`)
+
+**Responsibility:** Manages connections from parent context to child contexts.
+
+**Key Features:**
+- Creates and tracks connections to guests (workers, iframes)
+- Waits for incoming handshake requests
+- Validates guest identity (especially for iframes)
+- Generates unique connection IDs
+- Manages global connections map
+- Handles connection cleanup
+
+**Example:**
+```javascript
+import { host } from 'postbridge';
+
+const worker = new Worker('worker.js');
+const connection = await host.connect(worker, {
+  // Host methods
+  log: (msg) => console.log(msg)
+});
+
+// Call guest methods
+await connection.remote.process(data);
+```
+
+### 2. Guest Module (`guest.ts`)
+
+**Responsibility:** Establishes connection from child context to parent.
+
+**Key Features:**
+- Auto-detects host target (parent window, self, parentPort)
+- Initiates handshake by sending request
+- Processes handshake response
+- Registers RPC handlers
+- Confirms connection establishment
+- Provides optional setup hook
+
+**Example:**
+```javascript
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  // Guest methods
+  process: (data) => processData(data)
+});
+
+// Call host methods
+await connection.remote.log('Processing complete');
+```
+
+### 3. RPC Engine (`rpc.ts`)
+
+**Responsibility:** Core RPC mechanism - creating proxies, routing calls, handling responses.
+
+**Key Features:**
+- **Proxy Creation:** Generates remote method proxies
+- **Method Registration:** Sets up local method handlers
+- **Call Routing:** Routes incoming RPC requests to correct methods
+- **Response Handling:** Matches responses with pending calls
+- **Error Propagation:** Throws remote errors as if local
+- **Transferables Support:** Efficient binary data transfer
+- **Bidirectional RPC:** Both sides can call each other
+
+**Example (simplified):**
+```javascript
+// Create proxy methods
+const { remote } = registerRemoteMethods(schema, methodNames, connectionID);
+
+// Register local handlers
+registerLocalMethods(localMethods, connectionID, listenTo, sendTo);
+
+// Call remote method (becomes RPC_REQUEST)
+await remote.someMethod(arg1, arg2);
+```
+
+### 4. Types Module (`types.ts`)
+
+**Responsibility:** TypeScript definitions and core type system.
+
+**Key Definitions:**
+- `Schema` - API definition object
+- `Connection` - Connection object with remote and close
+- `Guest` - Worker, iframe, or MessagePort types
+- `actions` - Message action types (HANDSHAKE_REQUEST, RPC_REQUEST, etc.)
+- `events` - Event names (MESSAGE, ERROR, etc.)
+
+### 5. Helpers Module (`helpers.ts`)
+
+**Responsibility:** Cross-platform utility functions.
+
+**Key Features:**
+- **Environment Detection:** isWorker(), isIframe(), isNodeEnv()
+- **Message Passing:** postMessageToTarget() with unified API
+- **Event Handling:** addEventListener/removeEventListener abstraction
+- **Target Detection:** getTargetHost() for auto-detecting parent
+- **Origin Parsing:** getOriginFromURL() for security
+- **ID Generation:** generateId() for unique identifiers
+- **Method Extraction:** extractMethods() from schemas
+
+## Data Flow
+
+### Connection Establishment Flow
+
+```
+┌────────────┐                                    ┌────────────┐
+│    HOST    │                                    │   GUEST    │
+└──────┬─────┘                                    └──────┬─────┘
+       │                                                 │
+       │ 1. host.connect(guest, schema)                  │
+       │    - Generate connectionID                      │
+       │    - Start listening for HANDSHAKE_REQUEST      │
+       │                                                 │
+       │                                2. guest.connect(schema)
+       │                                   - Extract methods
+       │                                   - Send handshake
+       │                                                 │
+       │◄────────── HANDSHAKE_REQUEST ───────────────────┤
+       │            { methodNames, schema }              │
+       │                                                 │
+       │ 3. Process handshake                            │
+       │    - Validate guest (security)                  │
+       │    - Extract local methods                      │
+       │    - Register remote methods                    │
+       │    - Register local methods                     │
+       │                                                 │
+       ├──────────── HANDSHAKE_REPLY ───────────────────►│
+       │   { connectionID, methodNames, schema }         │
+       │                                                 │
+       │                                4. Process reply
+       │                                   - Register remote methods
+       │                                   - Register local methods
+       │                                   - Run onConnectionSetup
+       │                                                 │
+       │◄──────── HANDSHAKE_REPLY (confirm) ─────────────┤
+       │            { connectionID }                     │
+       │                                                 │
+       │ 5. Connection established                       │
+       │    - Resolve promise                            │
+       │                                                 │
+       ▼                                                 ▼
+  [Connected]                                       [Connected]
+```
+
+### RPC Call Flow
+
+```
+┌────────────┐                                    ┌────────────┐
+│    HOST    │                                    │   GUEST    │
+└──────┬─────┘                                    └──────┬─────┘
+       │                                                 │
+       │ await remote.calculate(5, 3)                    │
+       │                                                 │
+       │ 1. Proxy function called                        │
+       │    - Generate unique callID                     │
+       │    - Create pending promise                     │
+       │    - Store in responseMap                       │
+       │                                                 │
+       ├───────────── RPC_REQUEST ──────────────────────►│
+       │  { connectionID, callID,                        │
+       │    method: 'calculate', args: [5, 3] }          │
+       │                                                 │
+       │                                2. Handler called
+       │                                   - Extract method
+       │                                   - Execute: calculate(5, 3)
+       │                                   - Result: 8
+       │                                                 │
+       │◄──────────── RPC_RESOLVE ───────────────────────┤
+       │  { connectionID, callID, result: 8 }            │
+       │                                                 │
+       │ 3. Response handler                             │
+       │    - Match callID in responseMap                │
+       │    - Resolve promise with result                │
+       │    - Remove from responseMap                    │
+       │                                                 │
+       ▼                                                 ▼
+  Promise resolves with 8                         Handler complete
+```
+
+### Error Flow
+
+```
+┌────────────┐                                    ┌────────────┐
+│    HOST    │                                    │   GUEST    │
+└──────┬─────┘                                    └──────┬─────┘
+       │                                                 │
+       │ await remote.divide(10, 0)                      │
+       │                                                 │
+       ├───────────── RPC_REQUEST ──────────────────────►│
+       │  { callID: 'xyz', method: 'divide',             │
+       │    args: [10, 0] }                              │
+       │                                                 │
+       │                                   Method throws error
+       │                                   - Error: Division by zero
+       │                                                 │
+       │◄──────────── RPC_REJECT ────────────────────────┤
+       │  { callID: 'xyz', error: 'Division by zero' }   │
+       │                                                 │
+       │ Promise rejects                                 │
+       │ - throw new Error('Division by zero')           │
+       │                                                 │
+       ▼                                                 ▼
+  Catch block executes                            Handler complete
+```
+
+## Message Types
+
+postbridge uses five message action types:
+
+### 1. HANDSHAKE_REQUEST
+```javascript
+{
+  action: 'POSTBRIDGE/HANDSHAKE_REQUEST',
+  methodNames: ['method1', 'method2'],
+  schema: { config: {...}, /* non-function data */ }
+}
+```
+**Sent by:** Guest → Host
+**Purpose:** Initiate connection, share guest's methods
+
+### 2. HANDSHAKE_REPLY
+```javascript
+{
+  action: 'POSTBRIDGE/HANDSHAKE_REPLY',
+  connectionID: 'unique-id-123',
+  methodNames: ['method1', 'method2'],
+  schema: { config: {...}, /* non-function data */ }
+}
+```
+**Sent by:** Host → Guest, then Guest → Host (confirmation)
+**Purpose:** Complete handshake, share host's methods
+
+### 3. RPC_REQUEST
+```javascript
+{
+  action: 'POSTBRIDGE/RPC_REQUEST',
+  connectionID: 'unique-id-123',
+  callID: 'call-id-456',
+  method: 'methodName',
+  methodPath: ['nested', 'path'], // For nested APIs
+  args: [arg1, arg2, arg3],
+  transferables: [...] // If using transferables
+}
+```
+**Sent by:** Either side
+**Purpose:** Call a remote method
+
+### 4. RPC_RESOLVE
+```javascript
+{
+  action: 'POSTBRIDGE/RPC_RESOLVE',
+  connectionID: 'unique-id-123',
+  callID: 'call-id-456',
+  result: { /* return value */ }
+}
+```
+**Sent by:** Either side
+**Purpose:** Return successful result
+
+### 5. RPC_REJECT
+```javascript
+{
+  action: 'POSTBRIDGE/RPC_REJECT',
+  connectionID: 'unique-id-123',
+  callID: 'call-id-456',
+  error: 'Error message'
+}
+```
+**Sent by:** Either side
+**Purpose:** Return error
+
+## State Management
+
+### Connection State
+
+Each connection has:
+- **connectionID:** Unique identifier
+- **remote:** Proxy object for calling remote methods
+- **close:** Function to tear down connection
+- **responseMap:** Pending RPC calls (stored in closure)
+- **localMethods:** Methods this side exposes
+- **remoteMethods:** Methods other side exposes
+
+### Global State
+
+**Host-side:**
+```javascript
+const connections: Connections = {};
+// { 'connectionID1': connection1, 'connectionID2': connection2 }
+```
+- Tracks all active connections
+- Allows multiple guests
+- Cleanup on connection close
+
+**Guest-side:**
+- No global state (one connection per guest)
+- Connection stored in closure
+
+## Design Patterns
+
+### 1. Proxy Pattern
+
+Remote methods are proxies that trigger RPC calls:
+
+```javascript
+// User calls:
+await connection.remote.calculate(5, 3);
+
+// Behind the scenes, proxy function:
+function proxyFunction(...args) {
+  const callID = generateId();
+  return new Promise((resolve, reject) => {
+    // Store resolver
+    responseMap.set(callID, { resolve, reject });
+
+    // Send RPC request
+    postMessage({
+      action: 'RPC_REQUEST',
+      callID,
+      method: 'calculate',
+      args: [5, 3]
+    });
+  });
+}
+```
+
+### 2. Promise-Based Async
+
+All RPC calls return Promises:
+
+```javascript
+// Even sync methods become async
+const schema = {
+  add: (a, b) => a + b // Synchronous function
+};
+
+// Calling it is async
+const result = await remote.add(5, 3); // Returns Promise
+```
+
+### 3. Event-Driven Architecture
+
+Message passing uses event listeners:
+
+```javascript
+// Request handler
+addEventListener(listenTo, 'message', (event) => {
+  if (event.data.action === 'RPC_REQUEST') {
+    handleRequest(event);
+  }
+});
+
+// Response handler
+addEventListener(listenTo, 'message', (event) => {
+  if (event.data.action === 'RPC_RESOLVE') {
+    handleResponse(event);
+  }
+});
+```
+
+### 4. Bidirectional Communication
+
+Both sides are equal peers:
+
+```javascript
+// Host can call guest
+await connection.remote.guestMethod();
+
+// Guest can call host (remote passed to local methods)
+const schema = {
+  guestMethod: async (data, remote) => {
+    await remote.hostMethod(); // Guest calls host!
+    return result;
+  }
+};
+```
+
+## Security Architecture
+
+### Layered Security
+
+```
+┌─────────────────────────────────────────┐
+│  User Code (Validation & Sanitization)  │ ← Layer 4
+├─────────────────────────────────────────┤
+│  TypeScript (Type Safety)               │ ← Layer 3
+├─────────────────────────────────────────┤
+│  postbridge (Origin Validation)         │ ← Layer 2
+├─────────────────────────────────────────┤
+│  Browser (Context Isolation)            │ ← Layer 1
+└─────────────────────────────────────────┘
+```
+
+**Layer 1: Browser**
+- Enforces context isolation
+- Structured clone algorithm
+- Same-origin policy
+
+**Layer 2: postbridge**
+- Origin validation for iframes
+- Connection ID isolation
+- Message action validation
+
+**Layer 3: TypeScript**
+- Type checking at compile time
+- Prevents many errors before runtime
+
+**Layer 4: User Code**
+- Input validation
+- Data sanitization
+- Business logic security
+
+## Performance Considerations
+
+### Message Overhead
+
+Each RPC call has overhead:
+- Serialization (~0.1-1ms for small objects)
+- postMessage (~0.1-0.5ms)
+- Deserialization (~0.1-1ms)
+- **Total: ~0.3-2.5ms per call**
+
+### Optimization Strategies
+
+**1. Batching:**
+```javascript
+//  Slow: 100 RPC calls
+for (let i = 0; i < 100; i++) {
+  await remote.process(items[i]);
+}
+
+//  Fast: 1 RPC call
+await remote.processBatch(items);
+```
+
+**2. Transferables:**
+```javascript
+//  Slow: Copies 10MB
+const buffer = new ArrayBuffer(10 * 1024 * 1024);
+await remote.process({ buffer });
+
+//  Fast: Transfers 10MB (zero-copy)
+await remote.process(
+  withTransferable(t => t(buffer))
+);
+```
+
+**3. Worker Pooling:**
+```javascript
+// Create pool of workers
+const workers = Array.from({ length: 4 }, () =>
+  host.connect(new Worker('worker.js'), schema)
+);
+
+// Distribute work
+const results = await Promise.all(
+  data.map((chunk, i) =>
+    workers[i % 4].remote.process(chunk)
+  )
+);
+```
+
+## Summary
+
+**postbridge Architecture:**
+- Modular design (host, guest, rpc, helpers, types)
+- Event-driven communication
+- Promise-based async API
+- Bidirectional RPC by default
+- Layered security model
+
+**Key Flows:**
+- Handshake: Guest → Host → Guest (confirmation)
+- RPC Call: Caller → Receiver → Caller (response)
+- Error: Receiver → Caller (rejection)
+
+**Design Patterns:**
+- Proxy pattern for remote methods
+- Promise-based async
+- Event-driven messaging
+- Peer-to-peer bidirectional
+
+**Next steps:**
+- Deep dive into [Handshake Protocol](?path=/docs/architecture-handshake--docs)
+- Understand [Message Flow](?path=/docs/architecture-message-flow--docs)
+- Learn [Connection Lifecycle](?path=/docs/architecture-lifecycle--docs)
+- Review [Core Components](?path=/docs/introduction--docs) for implementation details
+
+---
+
+This architecture enables simple, type-safe, bidirectional RPC across all JavaScript contexts!

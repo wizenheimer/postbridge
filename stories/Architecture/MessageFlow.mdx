@@ -1,0 +1,676 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Architecture/Message Flow" />
+
+# Message Flow
+
+This document explains how messages flow between contexts during RPC calls, including request/response matching, error handling, and transferables.
+
+## RPC Call Lifecycle
+
+When you call a remote method, several steps happen behind the scenes:
+
+```
+User Code: await connection.remote.calculate(5, 3)
+                         │
+                         ▼
+┌────────────────────────────────────────────────────┐
+│ 1. PROXY FUNCTION INVOKED                          │
+│    - Generate unique callID                        │
+│    - Create Promise                                │
+│    - Store resolve/reject in responseMap           │
+└───────────────────┬────────────────────────────────┘
+                    │
+                    ▼
+┌────────────────────────────────────────────────────┐
+│ 2. SEND RPC_REQUEST                                │
+│    - Serialize arguments                           │
+│    - postMessage to remote context                 │
+└───────────────────┬────────────────────────────────┘
+                    │
+                    │ postMessage
+                    │
+                    ▼
+┌────────────────────────────────────────────────────┐
+│ 3. RECEIVE RPC_REQUEST (Remote Side)               │
+│    - Event listener receives message               │
+│    - Filter by connectionID and action             │
+│    - Extract method name and arguments             │
+└───────────────────┬────────────────────────────────┘
+                    │
+                    ▼
+┌────────────────────────────────────────────────────┐
+│ 4. EXECUTE METHOD                                  │
+│    - Look up method by name                        │
+│    - Call with arguments + remote object           │
+│    - Catch any errors                              │
+└───────────────────┬────────────────────────────────┘
+                    │
+            Success │ or Error
+                    │
+                    ▼
+┌────────────────────────────────────────────────────┐
+│ 5. SEND RESPONSE                                   │
+│    - RPC_RESOLVE (success) or RPC_REJECT (error)   │
+│    - Include callID for matching                   │
+│    - postMessage back to caller                    │
+└───────────────────┬────────────────────────────────┘
+                    │
+                    │ postMessage
+                    │
+                    ▼
+┌────────────────────────────────────────────────────┐
+│ 6. RECEIVE RESPONSE (Original Caller)              │
+│    - Event listener receives message               │
+│    - Match callID in responseMap                   │
+│    - Resolve or reject stored Promise              │
+│    - Remove from responseMap                       │
+└───────────────────┬────────────────────────────────┘
+                    │
+                    ▼
+       User Code: Promise resolves/rejects
+```
+
+## Message Structure
+
+### RPC_REQUEST
+
+**Sent when:** Calling a remote method
+**Direction:** Caller → Callee
+
+```javascript
+{
+  action: 'POSTBRIDGE/RPC_REQUEST',
+  connectionID: 'abc123',
+  callID: 'call-456',
+  method: 'calculate',
+  methodPath: ['math', 'add'], // For nested APIs
+  args: [5, 3],
+  transferables: [...] // Optional
+}
+```
+
+**Fields:**
+- `action`: Message type identifier
+- `connectionID`: Routes to correct connection
+- `callID`: Unique identifier for this call (matches request with response)
+- `method`: Method name to call
+- `methodPath`: Array path for nested methods (e.g., ['math', 'add'])
+- `args`: Method arguments (must be structured-clonable)
+- `transferables`: Array of transferable objects (optional)
+
+### RPC_RESOLVE
+
+**Sent when:** Method executes successfully
+**Direction:** Callee → Caller
+
+```javascript
+{
+  action: 'POSTBRIDGE/RPC_RESOLVE',
+  connectionID: 'abc123',
+  callID: 'call-456',
+  result: { data: [2, 4, 6] }
+}
+```
+
+**Fields:**
+- `action`: Response type (success)
+- `connectionID`: Routes to correct connection
+- `callID`: Matches the request's callID
+- `result`: Return value from method
+
+### RPC_REJECT
+
+**Sent when:** Method throws an error
+**Direction:** Callee → Caller
+
+```javascript
+{
+  action: 'POSTBRIDGE/RPC_REJECT',
+  connectionID: 'abc123',
+  callID: 'call-456',
+  error: 'Division by zero'
+}
+```
+
+**Fields:**
+- `action`: Response type (error)
+- `connectionID`: Routes to correct connection
+- `callID`: Matches the request's callID
+- `error`: Error message (string)
+
+## Request/Response Matching
+
+### The responseMap
+
+Each connection maintains a **responseMap** to match responses with requests:
+
+```javascript
+const responseMap = new Map();
+
+// Structure:
+// callID → { resolve, reject }
+
+// Example:
+responseMap.set('call-456', {
+  resolve: (result) => { /* resolve promise */ },
+  reject: (error) => { /* reject promise */ }
+});
+```
+
+### Call Flow with responseMap
+
+```javascript
+// 1. User calls remote method
+const promise = connection.remote.calculate(5, 3);
+
+// 2. Proxy function generates callID and stores resolvers
+const callID = generateId(); // 'call-456'
+const promise = new Promise((resolve, reject) => {
+  responseMap.set(callID, { resolve, reject });
+
+  // Send request
+  postMessage({
+    action: 'RPC_REQUEST',
+    connectionID,
+    callID,
+    method: 'calculate',
+    args: [5, 3]
+  });
+});
+
+// 3. Response arrives
+function handleResponse(event) {
+  const data = event.data;
+
+  // Look up stored resolver
+  const pending = responseMap.get(data.callID); // { resolve, reject }
+
+  if (!pending) {
+    console.warn('Received response for unknown call:', data.callID);
+    return;
+  }
+
+  // Resolve or reject the promise
+  if (data.action === 'RPC_RESOLVE') {
+    pending.resolve(data.result);
+  } else if (data.action === 'RPC_REJECT') {
+    pending.reject(new Error(data.error));
+  }
+
+  // Clean up
+  responseMap.delete(data.callID);
+}
+
+// 4. User's promise resolves
+await promise; // Resolves with result (8)
+```
+
+## Concurrent Calls
+
+Multiple RPC calls can be in flight simultaneously:
+
+```javascript
+// All three calls happen concurrently
+const [result1, result2, result3] = await Promise.all([
+  connection.remote.calculate(5, 3),    // callID: 'a'
+  connection.remote.processData([1,2]), // callID: 'b'
+  connection.remote.fetchData('key')    // callID: 'c'
+]);
+
+// responseMap state during calls:
+responseMap = {
+  'a': { resolve, reject },
+  'b': { resolve, reject },
+  'c': { resolve, reject }
+}
+
+// Responses can arrive in any order:
+// - Response for 'b' arrives first → resolves promise 2
+// - Response for 'a' arrives second → resolves promise 1
+// - Response for 'c' arrives third → resolves promise 3
+```
+
+**callID ensures correct matching regardless of response order.**
+
+## Bidirectional Flow
+
+Both sides can call each other simultaneously:
+
+```
+┌──────────────┐                               ┌──────────────┐
+│     HOST     │                               │    GUEST     │
+└──────┬───────┘                               └──────┬───────┘
+       │                                              │
+       │ remote.processData([1,2,3])                 │
+       ├──── RPC_REQUEST (callID: 'h1') ────────────►│
+       │                                              │
+       │                                              │ local method:
+       │                              remote.log('Processing...') │
+       │◄──── RPC_REQUEST (callID: 'g1') ────────────┤
+       │                                              │
+       │ Execute: log('Processing...')               │
+       │                                              │ Execute:
+       │                                              │ processData([1,2,3])
+       │                                              │
+       ├──── RPC_RESOLVE (callID: 'g1') ────────────►│
+       │                                              │
+       │                                              │
+       │◄──── RPC_RESOLVE (callID: 'h1') ────────────┤
+       │      result: [2,4,6]                        │
+       │                                              │
+       ▼                                              ▼
+  Both promises resolved                     Both promises resolved
+```
+
+**Key point:** Each side has its own responseMap for tracking its own outgoing calls.
+
+## Nested Method Calls
+
+For nested APIs, the methodPath is used:
+
+```javascript
+// Schema
+const schema = {
+  math: {
+    add: (a, b) => a + b
+  }
+};
+
+// User calls
+await connection.remote.math.add(5, 3);
+
+// RPC_REQUEST message
+{
+  action: 'RPC_REQUEST',
+  connectionID: 'abc123',
+  callID: 'xyz',
+  method: 'math.add',           // Flattened name
+  methodPath: ['math', 'add'],  // Original path
+  args: [5, 3]
+}
+
+// Receiver looks up method
+const methods = {
+  'math.add': (a, b) => a + b
+};
+const method = methods['math.add']; // Found!
+const result = method(5, 3); // 8
+```
+
+## Error Handling
+
+### Method Throws Error
+
+```javascript
+// Guest method
+const schema = {
+  divide: (a, b) => {
+    if (b === 0) {
+      throw new Error('Division by zero');
+    }
+    return a / b;
+  }
+};
+
+// Host calls
+try {
+  await connection.remote.divide(10, 0);
+} catch (error) {
+  console.error('Remote error:', error.message);
+  // Output: "Remote error: Division by zero"
+}
+```
+
+**Message Flow:**
+```
+Host                                Guest
+  │                                  │
+  ├─ RPC_REQUEST ──────────────────►│
+  │  divide(10, 0)                  │
+  │                                  │
+  │                     Execute: divide(10, 0)
+  │                     Throws: Error('Division by zero')
+  │                                  │
+  │◄─ RPC_REJECT ────────────────────┤
+  │  error: 'Division by zero'      │
+  │                                  │
+  ▼                                  ▼
+Promise rejects with Error
+```
+
+### Method Not Found
+
+```javascript
+// Call non-existent method
+try {
+  await connection.remote.nonExistentMethod();
+} catch (error) {
+  console.error(error.message);
+  // Output: "Method nonExistentMethod not found"
+}
+```
+
+**Handler code:**
+```javascript
+function handleRequest(event) {
+  const data = event.data;
+  const method = methods[data.method];
+
+  if (!method) {
+    // Send error response
+    postMessage({
+      action: 'RPC_REJECT',
+      connectionID: data.connectionID,
+      callID: data.callID,
+      error: `Method ${data.method} not found`
+    });
+    return;
+  }
+
+  // Execute method...
+}
+```
+
+### Async Errors
+
+Async errors are caught and rejected:
+
+```javascript
+// Guest async method
+const schema = {
+  fetchData: async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Fetch failed');
+    }
+    return response.json();
+  }
+};
+
+// Host calls
+try {
+  await connection.remote.fetchData('invalid-url');
+} catch (error) {
+  console.error(error.message); // "Fetch failed"
+}
+```
+
+## Transferable Objects
+
+### Without Transferables (Copying)
+
+```javascript
+// Create 10MB buffer
+const buffer = new ArrayBuffer(10 * 1024 * 1024);
+
+// Send (copies 10MB)
+await connection.remote.processBuffer({ buffer });
+
+// buffer is still usable
+console.log(buffer.byteLength); // 10485760 (still has data)
+```
+
+**Message:**
+```javascript
+{
+  action: 'RPC_REQUEST',
+  callID: 'xyz',
+  method: 'processBuffer',
+  args: [{ buffer: ArrayBuffer }]
+  // ArrayBuffer is copied (slow for large data)
+}
+```
+
+### With Transferables (Zero-Copy)
+
+```javascript
+import { withTransferable } from 'postbridge';
+
+// Create 10MB buffer
+const buffer = new ArrayBuffer(10 * 1024 * 1024);
+
+// Send (transfers ownership, zero-copy)
+await connection.remote.processBuffer(
+  withTransferable(t => t(buffer))
+);
+
+// buffer is now detached (empty)
+console.log(buffer.byteLength); // 0 (no data)
+```
+
+**Message:**
+```javascript
+{
+  action: 'RPC_REQUEST',
+  callID: 'xyz',
+  method: 'processBuffer',
+  args: [{ buffer: ArrayBuffer }],
+  transferables: [ArrayBuffer] // Marked for transfer
+}
+
+// postMessage call:
+postMessage(message, [ArrayBuffer]); // Third parameter!
+```
+
+### How withTransferable Works
+
+```javascript
+export const withTransferable = (cb) => {
+  const transferables = [];
+
+  // Collector function
+  const transfer = (obj) => {
+    transferables.push(obj);
+    return obj;
+  };
+
+  // Execute callback
+  const result = cb(transfer);
+
+  // Mark result with transferables
+  result._transferables = transferables;
+
+  return result;
+};
+
+// Usage:
+const data = withTransferable(t => ({
+  buffer1: t(new ArrayBuffer(1024)),
+  buffer2: t(new ArrayBuffer(2048)),
+  regularData: 'not transferred'
+}));
+
+// data._transferables = [ArrayBuffer, ArrayBuffer]
+```
+
+**Detection in proxy:**
+```javascript
+function proxyFunction(...args) {
+  // Check for transferables
+  const transferables = [];
+  args.forEach(arg => {
+    if (arg && arg._transferables) {
+      transferables.push(...arg._transferables);
+      delete arg._transferables; // Clean up marker
+    }
+  });
+
+  // Send with transferables
+  postMessage(message, transferables);
+}
+```
+
+## Message Filtering
+
+Each connection only processes its own messages:
+
+```javascript
+function handleRequest(event) {
+  const data = getEventData(event);
+
+  // Filter 1: Check action type
+  if (data?.action !== actions.RPC_REQUEST) {
+    return; // Not an RPC request
+  }
+
+  // Filter 2: Check connection ID
+  if (data.connectionID !== connectionID) {
+    return; // For different connection
+  }
+
+  // Process this connection's request
+  executeMethod(data);
+}
+```
+
+**Why filtering is important:**
+- Multiple connections can exist (host with multiple workers)
+- All connections listen on the same channel
+- connectionID routes messages to correct handlers
+
+## Performance Considerations
+
+### Message Size
+
+```javascript
+//  Large message (slow)
+await connection.remote.process({
+  data: new Array(1000000).fill({ a: 1, b: 2, c: 3 })
+});
+// Serializing 1M objects is slow!
+
+//  Smaller message (fast)
+await connection.remote.processInChunks(1000000, { a: 1, b: 2, c: 3 });
+// Worker creates array internally
+```
+
+### Call Frequency
+
+```javascript
+//  Many small calls (high overhead)
+for (let i = 0; i < 1000; i++) {
+  await connection.remote.processItem(items[i]);
+}
+// 1000 RPC calls = 1000 postMessage calls
+
+//  Batched call (low overhead)
+await connection.remote.processBatch(items);
+// 1 RPC call = 1 postMessage call
+```
+
+### Concurrent Calls
+
+```javascript
+//  Sequential (slow)
+const r1 = await connection.remote.task1();
+const r2 = await connection.remote.task2();
+const r3 = await connection.remote.task3();
+
+//  Parallel (fast)
+const [r1, r2, r3] = await Promise.all([
+  connection.remote.task1(),
+  connection.remote.task2(),
+  connection.remote.task3()
+]);
+```
+
+## Message Timeline Example
+
+Complete timeline of a successful RPC call:
+
+```
+T=0ms   Host: await connection.remote.calculate(5, 3)
+T=0ms   Host: Generate callID='xyz', store in responseMap
+T=0ms   Host: postMessage(RPC_REQUEST)
+        ─────────────────────────────────────────────►
+T=1ms   Guest: Receive message event
+T=1ms   Guest: Filter by action and connectionID
+T=1ms   Guest: Extract method 'calculate' and args [5,3]
+T=1ms   Guest: Execute calculate(5, 3)
+T=1ms   Guest: Result = 8
+T=1ms   Guest: postMessage(RPC_RESOLVE)
+        ◄─────────────────────────────────────────────
+T=2ms   Host: Receive message event
+T=2ms   Host: Filter by action='RPC_RESOLVE'
+T=2ms   Host: Match callID='xyz' in responseMap
+T=2ms   Host: Resolve promise with result=8
+T=2ms   Host: Delete 'xyz' from responseMap
+T=2ms   Host: User's await completes with 8
+```
+
+**Total time: ~2ms** (mostly postMessage latency)
+
+## Debugging Message Flow
+
+### Enable Logging
+
+```javascript
+// In rpc.ts, add logging:
+function proxyFunction(...args) {
+  const callID = generateId();
+  console.log('[RPC] Calling', method, 'with callID', callID);
+
+  return new Promise((resolve, reject) => {
+    responseMap.set(callID, {
+      resolve: (result) => {
+        console.log('[RPC] Resolved', method, 'callID', callID, 'result', result);
+        resolve(result);
+      },
+      reject: (error) => {
+        console.error('[RPC] Rejected', method, 'callID', callID, 'error', error);
+        reject(error);
+      }
+    });
+
+    postMessage({...});
+  });
+}
+```
+
+**Output:**
+```
+[RPC] Calling calculate with callID xyz
+[RPC] Resolved calculate callID xyz result 8
+```
+
+### Inspect responseMap
+
+```javascript
+// Add to window/global for debugging
+window._postbridgeDebug = {
+  responseMap,
+  connectionID
+};
+
+// In console:
+_postbridgeDebug.responseMap
+// Map(2) { 'xyz' => {...}, 'abc' => {...} }
+```
+
+## Summary
+
+**Message Flow:**
+1. Proxy invoked → Generate callID
+2. Store promise resolver in responseMap
+3. Send RPC_REQUEST with callID
+4. Remote receives → Execute method
+5. Remote sends RPC_RESOLVE/REJECT with same callID
+6. Match callID in responseMap → Resolve/reject promise
+
+**Key Concepts:**
+- **callID:** Matches requests with responses
+- **connectionID:** Routes to correct connection
+- **responseMap:** Stores pending promises
+- **Bidirectional:** Both sides can call simultaneously
+- **Concurrent:** Multiple calls can be in flight
+- **Transferables:** Zero-copy for large binary data
+
+**Next steps:**
+- Review [Connection Lifecycle](./lifecycle.md) for complete lifecycle
+- Check [RPC Engine](?path=/docs/introduction--docs) for implementation details
+- See [Transferables Guide](?path=/docs/guides-transferables--docs) for efficient data transfer
+
+---
+
+Understanding message flow is key to debugging and optimizing postbridge applications!

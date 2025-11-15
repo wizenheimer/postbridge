@@ -1,0 +1,562 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Nested APIs" />
+
+# Nested APIs Guide
+
+Complete guide to organizing methods into nested namespaces with postbridge.
+
+## What are Nested APIs?
+
+Nested APIs allow you to organize methods into **namespaced hierarchies** rather than flat structures:
+
+```javascript
+// Flat API
+{
+  mathAdd: (a, b) => a + b,
+  mathSubtract: (a, b) => a - b,
+  stringUpper: (s) => s.toUpperCase(),
+  stringLower: (s) => s.toLowerCase()
+}
+
+// Nested API
+{
+  math: {
+    add: (a, b) => a + b,
+    subtract: (a, b) => a - b
+  },
+  string: {
+    upper: (s) => s.toUpperCase(),
+    lower: (s) => s.toLowerCase()
+  }
+}
+```
+
+**Benefits:**
+- **Organization**: Logical grouping of related methods
+- **Clarity**: Clear API structure
+- **Scalability**: Easy to add new namespaces
+- **Familiarity**: Similar to object-oriented APIs
+
+## Basic Usage
+
+### Simple Nesting
+
+**Guest:**
+```javascript
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  math: {
+    add: (a, b) => a + b,
+    subtract: (a, b) => a - b,
+    multiply: (a, b) => a * b,
+    divide: (a, b) => {
+      if (b === 0) throw new Error('Division by zero');
+      return a / b;
+    }
+  },
+
+  string: {
+    uppercase: (s) => s.toUpperCase(),
+    lowercase: (s) => s.toLowerCase(),
+    reverse: (s) => s.split('').reverse().join('')
+  }
+});
+```
+
+**Host:**
+```javascript
+import { host } from 'postbridge';
+
+const worker = new Worker('worker.js', { type: 'module' });
+const connection = await host.connect(worker, {});
+
+// Call nested methods
+const sum = await connection.remote.math.add(5, 3);
+console.log(sum); // 8
+
+const product = await connection.remote.math.multiply(4, 7);
+console.log(product); // 28
+
+const upper = await connection.remote.string.uppercase('hello');
+console.log(upper); // 'HELLO'
+
+const reversed = await connection.remote.string.reverse('world');
+console.log(reversed); // 'dlrow'
+```
+
+### Deep Nesting
+
+```javascript
+const connection = await guest.connect({
+  api: {
+    users: {
+      list: () => database.users.findAll(),
+      get: (id) => database.users.findById(id),
+      create: (data) => database.users.create(data),
+      update: (id, data) => database.users.update(id, data),
+      delete: (id) => database.users.delete(id)
+    },
+
+    posts: {
+      list: () => database.posts.findAll(),
+      get: (id) => database.posts.findById(id),
+      byAuthor: (authorId) => database.posts.findByAuthor(authorId)
+    },
+
+    comments: {
+      byPost: (postId) => database.comments.findByPost(postId)
+    }
+  }
+});
+
+// Usage
+const users = await connection.remote.api.users.list();
+const post = await connection.remote.api.posts.get(123);
+const comments = await connection.remote.api.comments.byPost(123);
+```
+
+## Practical Examples
+
+### Example 1: Database API
+
+```javascript
+const connection = await guest.connect({
+  db: {
+    users: {
+      find: (query) => users.find(query),
+      findOne: (id) => users.findOne(id),
+      create: (data) => users.create(data),
+      update: (id, data) => users.update(id, data),
+      delete: (id) => users.delete(id),
+      count: () => users.count()
+    },
+
+    products: {
+      find: (query) => products.find(query),
+      findOne: (id) => products.findOne(id),
+      search: (term) => products.search(term),
+      inStock: () => products.find({ stock: { $gt: 0 } })
+    },
+
+    orders: {
+      find: (query) => orders.find(query),
+      findOne: (id) => orders.findOne(id),
+      create: (order) => orders.create(order),
+      byUser: (userId) => orders.find({ userId })
+    }
+  }
+});
+
+// Usage
+const user = await connection.remote.db.users.findOne(1);
+const products = await connection.remote.db.products.inStock();
+const userOrders = await connection.remote.db.orders.byUser(user.id);
+```
+
+### Example 2: Image Processing API
+
+```javascript
+const connection = await guest.connect({
+  image: {
+    filters: {
+      grayscale: (imageData) => applyGrayscale(imageData),
+      sepia: (imageData) => applySepia(imageData),
+      invert: (imageData) => applyInvert(imageData),
+      blur: (imageData, radius) => applyBlur(imageData, radius)
+    },
+
+    transforms: {
+      resize: (imageData, width, height) => resize(imageData, width, height),
+      crop: (imageData, x, y, width, height) => crop(imageData, x, y, width, height),
+      rotate: (imageData, degrees) => rotate(imageData, degrees),
+      flip: {
+        horizontal: (imageData) => flipHorizontal(imageData),
+        vertical: (imageData) => flipVertical(imageData)
+      }
+    },
+
+    analyze: {
+      histogram: (imageData) => calculateHistogram(imageData),
+      dominantColors: (imageData) => findDominantColors(imageData),
+      brightness: (imageData) => calculateBrightness(imageData)
+    }
+  }
+});
+
+// Usage
+const grayscale = await connection.remote.image.filters.grayscale(imageData);
+const resized = await connection.remote.image.transforms.resize(imageData, 800, 600);
+const flipped = await connection.remote.image.transforms.flip.horizontal(imageData);
+const colors = await connection.remote.image.analyze.dominantColors(imageData);
+```
+
+### Example 3: File System API
+
+```javascript
+import fs from 'fs/promises';
+import path from 'path';
+
+const connection = await guest.connect({
+  fs: {
+    read: {
+      file: (filepath) => fs.readFile(filepath, 'utf8'),
+      json: async (filepath) => JSON.parse(await fs.readFile(filepath, 'utf8')),
+      binary: (filepath) => fs.readFile(filepath),
+      dir: (dirpath) => fs.readdir(dirpath)
+    },
+
+    write: {
+      file: (filepath, content) => fs.writeFile(filepath, content),
+      json: (filepath, obj) => fs.writeFile(filepath, JSON.stringify(obj, null, 2)),
+      binary: (filepath, buffer) => fs.writeFile(filepath, buffer)
+    },
+
+    info: {
+      exists: async (filepath) => {
+        try {
+          await fs.access(filepath);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      stats: (filepath) => fs.stat(filepath),
+      size: async (filepath) => (await fs.stat(filepath)).size
+    },
+
+    operations: {
+      copy: (src, dest) => fs.copyFile(src, dest),
+      move: (src, dest) => fs.rename(src, dest),
+      delete: (filepath) => fs.unlink(filepath),
+      mkdir: (dirpath) => fs.mkdir(dirpath, { recursive: true })
+    }
+  }
+});
+
+// Usage
+const content = await connection.remote.fs.read.file('data.txt');
+await connection.remote.fs.write.json('output.json', { data: 'value' });
+const exists = await connection.remote.fs.info.exists('file.txt');
+await connection.remote.fs.operations.copy('src.txt', 'dest.txt');
+```
+
+### Example 4: Utility API
+
+```javascript
+const connection = await guest.connect({
+  utils: {
+    array: {
+      unique: (arr) => [...new Set(arr)],
+      flatten: (arr) => arr.flat(Infinity),
+      chunk: (arr, size) => {
+        const chunks = [];
+        for (let i = 0; i < arr.length; i += size) {
+          chunks.push(arr.slice(i, i + size));
+        }
+        return chunks;
+      },
+      shuffle: (arr) => arr.sort(() => Math.random() - 0.5)
+    },
+
+    object: {
+      pick: (obj, keys) => {
+        const result = {};
+        keys.forEach(key => {
+          if (key in obj) result[key] = obj[key];
+        });
+        return result;
+      },
+      omit: (obj, keys) => {
+        const result = { ...obj };
+        keys.forEach(key => delete result[key]);
+        return result;
+      },
+      merge: (...objects) => Object.assign({}, ...objects)
+    },
+
+    string: {
+      capitalize: (s) => s.charAt(0).toUpperCase() + s.slice(1),
+      slugify: (s) => s.toLowerCase().replace(/\s+/g, '-'),
+      truncate: (s, length) => s.length > length ? s.slice(0, length) + '...' : s
+    },
+
+    date: {
+      format: (date, format) => formatDate(date, format),
+      addDays: (date, days) => new Date(date.getTime() + days * 86400000),
+      diffDays: (date1, date2) => Math.floor((date2 - date1) / 86400000)
+    }
+  }
+});
+
+// Usage
+const unique = await connection.remote.utils.array.unique([1, 2, 2, 3, 3, 3]);
+const picked = await connection.remote.utils.object.pick({ a: 1, b: 2, c: 3 }, ['a', 'c']);
+const slug = await connection.remote.utils.string.slugify('Hello World');
+```
+
+## Mixing Nested and Flat
+
+You can mix nested and flat methods:
+
+```javascript
+const connection = await guest.connect({
+  // Flat methods
+  ping: () => 'pong',
+  getVersion: () => '1.0.0',
+
+  // Nested methods
+  data: {
+    get: (key) => storage.get(key),
+    set: (key, value) => storage.set(key, value)
+  },
+
+  compute: {
+    sum: (numbers) => numbers.reduce((a, b) => a + b, 0),
+    average: (numbers) => numbers.reduce((a, b) => a + b, 0) / numbers.length
+  }
+});
+
+// Usage
+await connection.remote.ping(); // Flat
+await connection.remote.data.get('key'); // Nested
+await connection.remote.compute.sum([1, 2, 3]); // Nested
+```
+
+## Bidirectional with Nested APIs
+
+Both host and guest can have nested APIs:
+
+```javascript
+// Host with nested API
+const connection = await host.connect(worker, {
+  ui: {
+    showMessage: (msg) => alert(msg),
+    updateProgress: (percent) => progressBar.value = percent
+  },
+
+  storage: {
+    save: (key, value) => localStorage.setItem(key, value),
+    load: (key) => localStorage.getItem(key)
+  }
+});
+
+// Worker with nested API
+const connection = await guest.connect({
+  process: {
+    image: async (imageData, remote) => {
+      await remote.ui.showMessage('Processing image...');
+      const result = processImage(imageData);
+      await remote.storage.save('last-result', result);
+      return result;
+    },
+
+    video: async (videoData, remote) => {
+      for (let i = 0; i < 100; i++) {
+        await remote.ui.updateProgress(i);
+        // Process frame...
+      }
+      return processedVideo;
+    }
+  }
+});
+
+// Both sides use nested calls
+await connection.remote.process.image(imageData);
+```
+
+## TypeScript Support
+
+Full type safety with nested APIs:
+
+```typescript
+interface GuestSchema {
+  math: {
+    add: (a: number, b: number) => number;
+    subtract: (a: number, b: number) => number;
+  };
+  string: {
+    uppercase: (s: string) => string;
+    lowercase: (s: string) => string;
+  };
+}
+
+const connection = await guest.connect<GuestSchema, HostSchema>({
+  math: {
+    add: (a, b) => a + b,
+    subtract: (a, b) => a - b
+  },
+  string: {
+    uppercase: (s) => s.toUpperCase(),
+    lowercase: (s) => s.toLowerCase()
+  }
+});
+
+// Type-safe calls
+const sum: number = await connection.remote.math.add(5, 3); // 
+const upper: string = await connection.remote.string.uppercase('hello'); // 
+
+// TypeScript errors
+await connection.remote.math.add('5', '3'); //  Wrong types
+await connection.remote.unknown.method(); //  Doesn't exist
+```
+
+## How It Works Internally
+
+### Method Path Flattening
+
+postbridge internally flattens nested methods:
+
+```javascript
+// Your schema
+{
+  math: {
+    add: (a, b) => a + b
+  }
+}
+
+// Internally stored as
+{
+  'math.add': (a, b) => a + b
+}
+
+// RPC message
+{
+  method: 'math.add',
+  methodPath: ['math', 'add'],
+  args: [5, 3]
+}
+```
+
+### Proxy Creation
+
+Remote object is created with nesting:
+
+```javascript
+// Internal proxy creation
+remote = {
+  math: {
+    add: createProxyFunction('math.add')
+  }
+}
+
+// When you call
+await remote.math.add(5, 3)
+
+// Sends message
+{
+  method: 'math.add',
+  args: [5, 3]
+}
+```
+
+## Limitations
+
+### Depth Limit
+
+While there's no hard limit, very deep nesting can impact performance:
+
+```javascript
+//  Good: 2-3 levels
+api.users.get(id)
+
+// ️ Okay: 4-5 levels
+api.v1.resources.users.profiles.get(id)
+
+//  Avoid: Too deep
+api.v1.endpoints.resources.users.data.profiles.info.get(id)
+```
+
+### Method Name Conflicts
+
+Avoid using reserved words or conflicting names:
+
+```javascript
+//  Bad: 'constructor' is reserved
+{
+  constructor: () => {} // Error!
+}
+
+//  Bad: Conflicts with properties
+{
+  toString: () => {} // May cause issues
+}
+
+//  Good: Clear, non-conflicting names
+{
+  build: () => {}
+}
+```
+
+## Best Practices
+
+1. **Logical Grouping**: Group related methods together
+2. **Consistent Naming**: Use clear, consistent namespace names
+3. **Moderate Depth**: Keep nesting to 2-3 levels max
+4. **Documentation**: Document nested structure clearly
+5. **TypeScript**: Define interfaces for nested schemas
+
+## Migration from Flat to Nested
+
+### Before (Flat)
+
+```javascript
+{
+  userList: () => {},
+  userGet: (id) => {},
+  userCreate: (data) => {},
+  productList: () => {},
+  productGet: (id) => {},
+  productCreate: (data) => {}
+}
+```
+
+### After (Nested)
+
+```javascript
+{
+  users: {
+    list: () => {},
+    get: (id) => {},
+    create: (data) => {}
+  },
+  products: {
+    list: () => {},
+    get: (id) => {},
+    create: (data) => {}
+  }
+}
+```
+
+### Gradual Migration
+
+Support both during transition:
+
+```javascript
+{
+  // Old flat methods (deprecated)
+  userList: () => users.list(),
+  userGet: (id) => users.get(id),
+
+  // New nested methods
+  users: {
+    list: () => {},
+    get: (id) => {}
+  }
+}
+```
+
+## Summary
+
+- **Nested APIs** organize methods into namespaces
+- **Syntax**: `remote.namespace.method()`
+- **Benefits**: Organization, clarity, scalability
+- **TypeScript**: Full type safety
+- **Best practice**: 2-3 levels of nesting
+- **Works with**: Bidirectional RPC, all contexts
+
+**Next steps:**
+- [Bidirectional RPC](?path=/docs/guides-bidirectional-rpc--docs)
+- [Error Handling](?path=/docs/guides-error-handling--docs)
+- [API Reference](?path=/docs/apireference-hostapi--docs)

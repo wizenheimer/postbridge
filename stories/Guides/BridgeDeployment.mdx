@@ -1,0 +1,409 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Bridge Deployment" />
+
+# Bridge Deployment Guide
+
+This guide explains how Bridge's SharedWorker loading works and how to deploy it in different environments.
+
+## How Worker Loading Works
+
+Bridge uses a **strict loading strategy** for the SharedWorker:
+
+```
+1. Custom Worker URL (if provided)
+   ↓
+2. Bundler Native Import (Vite/Webpack/etc)
+   ↓
+3.  FAIL (no fallback - intentional)
+```
+
+**Why no fallback?** We believe in **failing fast**. If the worker isn't properly configured, you should know immediately during development, not discover issues in production.
+
+### Strategy 1: Custom Worker URL (Recommended for Production)
+
+Provide your own worker URL for full control:
+
+```typescript
+import { bridge } from 'postbridge';
+
+const conn = await bridge.connect(schema, {
+  workerURL: '/workers/bridge-worker.js'
+});
+```
+
+**Benefits:**
+- Full control over worker location
+- Can use CDN for worker file
+- Explicit and predictable
+- Works with all bundlers
+
+### Strategy 2: Bundler Native Import (Automatic)
+
+When using Vite, Webpack, or similar bundlers, Bridge automatically uses:
+
+```typescript
+new SharedWorker(
+  new URL('./bridge-worker.ts', import.meta.url),
+  { type: 'module', name: 'bridge-worker' }
+);
+```
+
+This is handled automatically by your bundler during build.
+
+**Benefits:**
+- Zero configuration
+- Type-safe worker code
+- Lintable worker source
+- Automatic during development
+
+### What If Neither Works?
+
+Bridge will **throw an error**. This is intentional.
+
+**Why?**
+- Fail fast during development
+- No silent degradation in production  
+- Forces proper configuration
+- Prevents mysterious bugs
+
+**Solution:** Always provide a `workerURL` if your bundler doesn't support native worker imports.
+
+## Deployment Scenarios
+
+### Vite Project (Recommended)
+
+**No configuration needed!** Vite handles worker imports natively.
+
+```typescript
+// Just use it
+import { bridge } from 'postbridge';
+
+const conn = await bridge.connect({
+  updateCount: (count) => {
+    state.count = count;
+    return count;
+  }
+});
+```
+
+Vite will:
+1. Bundle the worker separately
+2. Generate proper worker URLs
+3. Handle module loading
+4. Include in your build output
+
+### Webpack Project
+
+**Option 1: Use worker-loader**
+
+```bash
+npm install -D worker-loader
+```
+
+```javascript
+// webpack.config.js
+module.exports = {
+  module: {
+    rules: [
+      {
+        test: /bridge-worker\.ts$/,
+        loader: 'worker-loader',
+        options: {
+          filename: 'workers/[name].[contenthash].js',
+        },
+      },
+    ],
+  },
+};
+```
+
+**Option 2: Provide worker URL**
+
+Build the worker separately and provide the URL:
+
+```typescript
+const conn = await bridge.connect(schema, {
+  workerURL: '/static/workers/bridge-worker.js'
+});
+```
+
+### Next.js
+
+Next.js doesn't support SharedWorker imports out of the box. Use the worker URL approach:
+
+```typescript
+// pages/index.tsx
+import { bridge } from 'postbridge';
+
+function MyPage() {
+  useEffect(() => {
+    bridge.connect(schema, {
+      workerURL: '/workers/bridge-worker.js'
+    }).then(conn => {
+      // Use connection
+    });
+  }, []);
+}
+```
+
+**Setup:**
+1. Copy worker file to `public/workers/`:
+   ```bash
+   cp node_modules/postbridge/lib/bridge-worker.js public/workers/
+   ```
+
+2. Or build it yourself:
+   ```bash
+   # Copy source
+   cp node_modules/postbridge/src/bridge-worker.ts src/workers/
+   
+   # Build with your tools
+   tsc src/workers/bridge-worker.ts --outDir public/workers
+   ```
+
+### Create React App (CRA)
+
+CRA doesn't support worker imports. Use the public folder approach:
+
+```typescript
+// src/App.tsx
+const conn = await bridge.connect(schema, {
+  workerURL: process.env.PUBLIC_URL + '/bridge-worker.js'
+});
+```
+
+**Setup:**
+```bash
+# Copy worker to public folder
+cp node_modules/postbridge/lib/bridge-worker.js public/
+```
+
+### CDN Usage (Unpkg, JSDelivr)
+
+When using Bridge from a CDN, provide the worker URL:
+
+```html
+<script type="module">
+  import { bridge } from 'https://unpkg.com/postbridge';
+
+  const conn = await bridge.connect(schema, {
+    workerURL: 'https://unpkg.com/postbridge/lib/bridge-worker.js'
+  });
+</script>
+```
+
+### Static Site (No Bundler)
+
+For static HTML sites:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <script type="module">
+    import { bridge } from './node_modules/postbridge/lib/postbridge.js';
+
+    const schema = {
+      updateCount: (count) => {
+        document.getElementById('count').textContent = count;
+        return count;
+      }
+    };
+
+    const conn = await bridge.connect(schema, {
+      workerURL: './node_modules/postbridge/lib/bridge-worker.js'
+    });
+  </script>
+</head>
+<body>
+  <div id="count">0</div>
+</body>
+</html>
+```
+
+## Production Checklist
+
+###  Verify Worker Loading
+
+Open DevTools Console. If you see errors about worker loading:
+
+```
+ Failed to construct 'SharedWorker'
+```
+
+**Solution:** Provide a `workerURL` option:
+
+```typescript
+const conn = await bridge.connect(schema, {
+  workerURL: '/workers/bridge-worker.js'
+});
+```
+
+###  Check SharedWorker Support
+
+```typescript
+if (typeof SharedWorker === 'undefined') {
+  console.error('SharedWorker not supported in this browser');
+  // Provide fallback (localStorage, BroadcastChannel, etc.)
+}
+```
+
+###  Test Cross-Origin
+
+If your app is served from a different origin than your workers:
+
+```typescript
+// Worker must be same-origin or have proper CORS headers
+const conn = await bridge.connect(schema, {
+  workerURL: 'https://your-cdn.com/bridge-worker.js'
+  // Worker must be served with proper headers
+});
+```
+
+**Required worker headers:**
+```
+Content-Type: application/javascript
+Access-Control-Allow-Origin: *
+```
+
+###  Bundle Size
+
+Check your bundle includes only what you need:
+
+```bash
+# Analyze bundle
+npx vite-bundle-visualizer
+
+# or for webpack
+npx webpack-bundle-analyzer dist/stats.json
+```
+
+Bridge adds:
+- Core: ~3KB gzipped
+- Worker (inline fallback): ~1KB gzipped
+- **Total: ~4KB gzipped**
+
+If you provide a separate worker file, the inline fallback is not used.
+
+## Troubleshooting
+
+### Worker Not Loading
+
+**Symptom:** Error constructing SharedWorker
+
+**Solution:**
+1. **For Vite projects:** Should work automatically (verify `vite.config.ts` has worker config)
+2. **For other bundlers:** Provide explicit `workerURL`:
+   ```typescript
+   const conn = await bridge.connect(schema, {
+     workerURL: '/workers/bridge-worker.js'
+   });
+   ```
+3. Verify worker file exists at the specified path
+4. Check browser DevTools Network tab for 404s
+
+### CORS Errors
+
+**Symptom:** Error loading worker from CDN
+
+**Solution:**
+- Serve worker from same origin, OR
+- Configure CDN to send CORS headers
+
+### Browser Doesn't Support SharedWorker
+
+**Symptom:** `typeof SharedWorker === 'undefined'`
+
+**Solution:**
+- Use BroadcastChannel API instead
+- Use localStorage + storage events
+- Use server-side synchronization
+
+See [Browser Compatibility](#browser-compatibility) below.
+
+## Browser Compatibility
+
+| Browser | SharedWorker Support |
+|---------|---------------------|
+| Chrome |  Yes |
+| Edge |  Yes |
+| Firefox |  Yes |
+| Safari |  No |
+| Safari iOS |  No |
+
+For Safari, consider alternative approaches:
+- [BroadcastChannel API](https://developer.mozilla.org/en-US/docs/Web/API/Broadcast_Channel_API)
+- [Storage Events](https://developer.mozilla.org/en-US/docs/Web/API/Window/storage_event)
+- Server-side synchronization (WebSockets, SSE)
+
+## Advanced: Custom Worker Build
+
+If you want to customize the worker:
+
+1. Copy the source:
+   ```bash
+   cp node_modules/postbridge/src/bridge-worker.ts src/
+   ```
+
+2. Modify as needed
+
+3. Build and provide URL:
+   ```typescript
+   const conn = await bridge.connect(schema, {
+     workerURL: '/my-custom-worker.js'
+   });
+   ```
+
+## Performance Tips
+
+### Use Worker Pool
+
+For high-traffic apps with many tabs:
+
+```typescript
+// Create connection once, reuse everywhere
+export let bridgeConnection;
+
+export async function initBridge() {
+  if (!bridgeConnection) {
+    bridgeConnection = await bridge.connect(schema);
+  }
+  return bridgeConnection;
+}
+```
+
+### Lazy Loading
+
+Don't load Bridge until needed:
+
+```typescript
+async function enableCrossTabSync() {
+  const { Bridge } = await import('postbridge');
+  return bridge.connect(schema);
+}
+```
+
+### Worker Caching
+
+Use service worker to cache the SharedWorker file:
+
+```javascript
+// service-worker.js
+self.addEventListener('fetch', (event) => {
+  if (event.request.url.includes('bridge-worker')) {
+    event.respondWith(
+      caches.match(event.request).then((response) => {
+        return response || fetch(event.request);
+      })
+    );
+  }
+});
+```
+
+## See Also
+
+- [Bridge Guide](?path=/docs/guides-bridge--docs)
+- [SharedWorker MDN](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker)
+- [Vite Worker Documentation](https://vitejs.dev/guide/features.html#web-workers)
+

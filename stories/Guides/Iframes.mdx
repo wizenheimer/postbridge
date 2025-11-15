@@ -1,0 +1,685 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/iframes" />
+
+# iframes Guide
+
+Complete guide to using postbridge for secure communication with iframes.
+
+## What are iframes?
+
+iframes (inline frames) embed another HTML document within the current page. They provide **sandboxed execution** for isolation and security.
+
+**Use cases:**
+- Embedding third-party widgets
+- Isolating untrusted content
+- Cross-origin content integration
+- Modular UI components
+- Payment processing (PCI compliance)
+
+**Security benefits:**
+- Separate global scope
+- Controlled permissions via `sandbox` attribute
+- Origin-based access control
+- XSS protection
+
+## Basic Setup
+
+### 1. Create the iframe Page
+
+**iframe.html:**
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Widget</title>
+</head>
+<body>
+  <h1>Embedded Widget</h1>
+  <div id="content"></div>
+
+  <script type="module">
+    import { guest } from 'postbridge';
+
+    const connection = await guest.connect({
+      // Methods parent can call
+      render: (data) => {
+        document.getElementById('content').innerHTML = data.html;
+      },
+
+      getStatus: () => {
+        return {
+          loaded: true,
+          width: window.innerWidth,
+          height: window.innerHeight
+        };
+      }
+    });
+
+    // Notify parent we're ready
+    await connection.remote.onWidgetReady();
+  </script>
+</body>
+</html>
+```
+
+### 2. Create the Parent Page
+
+**parent.html:**
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Parent Page</title>
+</head>
+<body>
+  <h1>Parent Page</h1>
+
+  <iframe id="widget" src="iframe.html" width="600" height="400"></iframe>
+
+  <button id="update-btn">Update Widget</button>
+
+  <script type="module">
+    import { host } from 'postbridge';
+
+    const iframe = document.getElementById('widget');
+
+    // Wait for iframe to load
+    iframe.addEventListener('load', async () => {
+      const connection = await host.connect(iframe, {
+        // Methods iframe can call
+        onWidgetReady: () => {
+          console.log('Widget is ready!');
+        },
+
+        getData: () => {
+          return { message: 'Hello from parent!' };
+        }
+      });
+
+      // Update button handler
+      document.getElementById('update-btn').addEventListener('click', async () => {
+        await connection.remote.render({
+          html: '<p>Updated content at ' + new Date().toLocaleTimeString() + '</p>'
+        });
+      });
+
+      // Get status
+      const status = await connection.remote.getStatus();
+      console.log('Widget status:', status);
+    });
+  </script>
+</body>
+</html>
+```
+
+## Same-Origin vs Cross-Origin
+
+### Same-Origin iframes
+
+**Scenario:** Both pages from same domain (e.g., `https://example.com`)
+
+```html
+<!-- Parent: https://example.com/parent.html -->
+<iframe src="https://example.com/widget.html"></iframe>
+```
+
+**Characteristics:**
+-  Can access iframe DOM (if not sandboxed)
+-  Shares cookies and localStorage
+-  Full JavaScript access
+- ️ Less isolation
+
+**Use when:**
+- You control both pages
+- Need direct DOM access
+- Want to share storage
+
+### Cross-Origin iframes
+
+**Scenario:** Pages from different domains
+
+```html
+<!-- Parent: https://example.com/parent.html -->
+<iframe src="https://widget-provider.com/widget.html"></iframe>
+```
+
+**Characteristics:**
+-  Cannot access iframe DOM
+-  No shared storage
+-  postMessage only communication
+-  Strong isolation
+
+**Use when:**
+- Embedding third-party content
+- Security is critical
+- Want maximum isolation
+
+## Security Considerations
+
+### Origin Validation
+
+postbridge **automatically validates** iframe origins:
+
+```javascript
+// Parent connects to iframe
+const iframe = document.getElementById('widget');
+iframe.src = 'https://trusted.com/widget.html';
+
+const connection = await host.connect(iframe, {});
+
+// Behind the scenes, postbridge validates:
+// 1. event.origin === 'https://trusted.com'
+// 2. event.source === iframe.contentWindow
+// 3. Rejects messages from other origins
+```
+
+**Attack prevented:**
+```
+Your Page (https://mysite.com)
+    │
+    ├─→ Trusted iframe (https://trusted.com)
+    │   Expected messages
+    │
+    └─→ Malicious iframe (https://evil.com)
+         Messages rejected (origin mismatch)
+```
+
+### Sandbox Attribute
+
+Restrict iframe capabilities:
+
+```html
+<!-- Minimal permissions -->
+<iframe
+  src="widget.html"
+  sandbox="allow-scripts allow-same-origin"
+></iframe>
+```
+
+**Sandbox flags:**
+```html
+<!-- No restrictions (dangerous!) -->
+<iframe src="widget.html"></iframe>
+
+<!-- Maximum restrictions -->
+<iframe src="widget.html" sandbox></iframe>
+
+<!-- Allow JavaScript -->
+<iframe src="widget.html" sandbox="allow-scripts"></iframe>
+
+<!-- Allow JavaScript + same-origin (be careful!) -->
+<iframe src="widget.html" sandbox="allow-scripts allow-same-origin"></iframe>
+
+<!-- Allow forms -->
+<iframe src="widget.html" sandbox="allow-scripts allow-forms"></iframe>
+
+<!-- Allow popups -->
+<iframe src="widget.html" sandbox="allow-scripts allow-popups"></iframe>
+
+<!-- Allow pointer lock (games) -->
+<iframe src="widget.html" sandbox="allow-scripts allow-pointer-lock"></iframe>
+```
+
+**️ Warning:** `allow-scripts allow-same-origin` together removes most sandboxing!
+
+### Content Security Policy
+
+Add CSP headers to restrict iframe sources:
+
+```html
+<meta http-equiv="Content-Security-Policy"
+      content="frame-src https://trusted.com;">
+```
+
+Only iframes from `trusted.com` can be embedded.
+
+### Input Validation
+
+**Always validate data from iframes:**
+
+```javascript
+const connection = await host.connect(iframe, {
+  saveData: (data) => {
+    //  DANGEROUS: No validation
+    database.save(data);
+
+    //  SAFE: Validate structure and sanitize
+    if (typeof data !== 'object' || !data.title || !data.content) {
+      throw new Error('Invalid data structure');
+    }
+
+    const sanitized = {
+      title: sanitizeString(data.title),
+      content: sanitizeHTML(data.content)
+    };
+
+    database.save(sanitized);
+  }
+});
+```
+
+## Practical Examples
+
+### Example 1: Payment Widget
+
+**parent.html:**
+```javascript
+import { host } from 'postbridge';
+
+const paymentIframe = document.getElementById('payment-iframe');
+paymentIframe.src = 'https://payment-provider.com/widget.html';
+
+await new Promise(resolve => {
+  paymentIframe.addEventListener('load', resolve);
+});
+
+const connection = await host.connect(paymentIframe, {
+  // Parent provides order info (not payment details!)
+  getOrderInfo: () => ({
+    orderId: '12345',
+    amount: 99.99,
+    currency: 'USD'
+  }),
+
+  // Payment provider notifies completion
+  onPaymentComplete: (result) => {
+    console.log('Payment completed:', result);
+    showSuccessMessage();
+  },
+
+  onPaymentFailed: (error) => {
+    console.error('Payment failed:', error);
+    showErrorMessage(error);
+  }
+});
+
+// Initialize payment
+await connection.remote.initializePayment();
+```
+
+**widget.html (payment provider):**
+```javascript
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  initializePayment: async (_, remote) => {
+    // Get order info from parent
+    const order = await remote.getOrderInfo();
+
+    // Display payment form
+    displayPaymentForm(order);
+  },
+
+  processPayment: async (paymentData, remote) => {
+    try {
+      // Process payment securely
+      const result = await processPaymentSecurely(paymentData);
+
+      // Notify parent
+      await remote.onPaymentComplete(result);
+    } catch (error) {
+      await remote.onPaymentFailed(error.message);
+    }
+  }
+});
+```
+
+### Example 2: Chart Widget
+
+**parent.html:**
+```javascript
+import { host } from 'postbridge';
+
+const chartIframe = document.getElementById('chart-iframe');
+
+await new Promise(resolve => {
+  chartIframe.addEventListener('load', resolve);
+});
+
+const connection = await host.connect(chartIframe, {
+  onChartClick: (dataPoint) => {
+    console.log('Clicked:', dataPoint);
+    showDetailedView(dataPoint);
+  }
+});
+
+// Update chart data
+document.getElementById('refresh-btn').addEventListener('click', async () => {
+  const data = await fetchChartData();
+
+  await connection.remote.renderChart({
+    type: 'line',
+    data: data,
+    options: {
+      responsive: true,
+      animations: true
+    }
+  });
+});
+```
+
+**chart-iframe.html:**
+```javascript
+import { guest } from 'postbridge';
+import Chart from 'chart.js/auto';
+
+let currentChart = null;
+
+const connection = await guest.connect({
+  renderChart: async ({ type, data, options }, remote) => {
+    // Destroy existing chart
+    if (currentChart) {
+      currentChart.destroy();
+    }
+
+    // Create new chart
+    const canvas = document.getElementById('chart');
+    currentChart = new Chart(canvas, {
+      type,
+      data,
+      options: {
+        ...options,
+        onClick: async (event, elements) => {
+          if (elements.length > 0) {
+            const dataPoint = data.datasets[0].data[elements[0].index];
+            await remote.onChartClick(dataPoint);
+          }
+        }
+      }
+    });
+  },
+
+  updateData: (newData) => {
+    if (currentChart) {
+      currentChart.data = newData;
+      currentChart.update();
+    }
+  }
+});
+```
+
+### Example 3: Rich Text Editor
+
+**parent.html:**
+```javascript
+import { host } from 'postbridge';
+
+const editorIframe = document.getElementById('editor-iframe');
+
+await new Promise(resolve => {
+  editorIframe.addEventListener('load', resolve);
+});
+
+const connection = await host.connect(editorIframe, {
+  onContentChange: (content) => {
+    // Auto-save
+    saveContent(content);
+  },
+
+  onReady: () => {
+    console.log('Editor ready');
+  }
+});
+
+// Load initial content
+await connection.remote.setContent(initialContent);
+
+// Save button
+document.getElementById('save-btn').addEventListener('click', async () => {
+  const content = await connection.remote.getContent();
+  await saveToServer(content);
+});
+```
+
+**editor-iframe.html:**
+```javascript
+import { guest } from 'postbridge';
+
+let editor;
+let changeTimer;
+
+const connection = await guest.connect({
+  setContent: (html) => {
+    editor.innerHTML = html;
+  },
+
+  getContent: () => {
+    return editor.innerHTML;
+  },
+
+  insertImage: (url) => {
+    const img = document.createElement('img');
+    img.src = url;
+    editor.appendChild(img);
+  }
+});
+
+// Initialize editor
+editor = document.getElementById('editor');
+editor.contentEditable = true;
+
+// Notify on changes (debounced)
+editor.addEventListener('input', () => {
+  clearTimeout(changeTimer);
+  changeTimer = setTimeout(async () => {
+    await connection.remote.onContentChange(editor.innerHTML);
+  }, 500);
+});
+
+// Notify ready
+await connection.remote.onReady();
+```
+
+## iframe Sizing
+
+### Fixed Size
+
+```html
+<iframe src="widget.html" width="600" height="400"></iframe>
+```
+
+### Responsive Size
+
+```html
+<style>
+  .iframe-container {
+    position: relative;
+    width: 100%;
+    padding-bottom: 56.25%; /* 16:9 aspect ratio */
+  }
+
+  .iframe-container iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+
+<div class="iframe-container">
+  <iframe src="widget.html"></iframe>
+</div>
+```
+
+### Dynamic Resizing
+
+**Parent:**
+```javascript
+const connection = await host.connect(iframe, {
+  resizeIframe: (width, height) => {
+    iframe.width = width;
+    iframe.height = height;
+  }
+});
+```
+
+**iframe:**
+```javascript
+const connection = await guest.connect({
+  updateContent: async (content, remote) => {
+    document.body.innerHTML = content;
+
+    // Calculate new size
+    const width = document.body.scrollWidth;
+    const height = document.body.scrollHeight;
+
+    // Ask parent to resize
+    await remote.resizeIframe(width, height);
+  }
+});
+```
+
+## Common Patterns
+
+### Pattern 1: Loading State
+
+**Parent:**
+```javascript
+showLoadingSpinner();
+
+iframe.addEventListener('load', async () => {
+  const connection = await host.connect(iframe, {
+    onReady: () => {
+      hideLoadingSpinner();
+    }
+  });
+});
+```
+
+**iframe:**
+```javascript
+const connection = await guest.connect({
+  // Methods...
+});
+
+// Notify ready
+await connection.remote.onReady();
+```
+
+### Pattern 2: Error Boundaries
+
+**Parent:**
+```javascript
+const connection = await host.connect(iframe, {
+  onError: (error) => {
+    console.error('iframe error:', error);
+    showErrorMessage('Widget encountered an error');
+  }
+});
+
+iframe.addEventListener('error', (event) => {
+  console.error('iframe load error:', event);
+  showErrorMessage('Widget failed to load');
+});
+```
+
+**iframe:**
+```javascript
+window.addEventListener('error', async (event) => {
+  await connection.remote.onError({
+    message: event.message,
+    stack: event.error?.stack
+  });
+});
+```
+
+### Pattern 3: Authentication
+
+**Parent:**
+```javascript
+const connection = await host.connect(iframe, {
+  getAuthToken: () => {
+    return localStorage.getItem('authToken');
+  }
+});
+```
+
+**iframe:**
+```javascript
+const connection = await guest.connect({
+  fetchProtectedData: async (endpoint, remote) => {
+    // Get token from parent
+    const token = await remote.getAuthToken();
+
+    // Make authenticated request
+    const response = await fetch(endpoint, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    return response.json();
+  }
+});
+```
+
+## Debugging iframes
+
+### Console Logs
+
+iframe console logs appear in DevTools:
+```javascript
+// In iframe
+console.log('iframe log'); // Appears with iframe URL prefix
+```
+
+### Inspect iframe Context
+
+1. Open DevTools
+2. Console dropdown → Select iframe context
+3. Execute commands in iframe scope
+
+### Network Requests
+
+iframe requests appear in Network tab with:
+- Initiator: iframe URL
+- Separate cookie jar (cross-origin)
+
+### Breakpoints
+
+Set breakpoints in iframe source just like main page.
+
+## Browser Compatibility
+
+iframes with postMessage are widely supported:
+- Chrome 1+
+- Firefox 1+
+- Safari 3+
+- Edge (all versions)
+- IE 8+ (postMessage)
+
+## Limitations
+
+1. **No DOM access (cross-origin):** Can't manipulate iframe DOM
+2. **Data serialization:** All data must be structured-clonable
+3. **Same-origin policy:** Strict security boundaries
+4. **Performance:** Message passing adds latency
+5. **Sandbox restrictions:** Limited capabilities when sandboxed
+
+## Best Practices
+
+1. **Always validate origin:** (postbridge does this automatically)
+2. **Use sandbox attribute:** Restrict iframe permissions
+3. **Validate all input:** Never trust iframe data
+4. **Minimize message size:** Large messages are slow
+5. **Handle errors gracefully:** iframe can fail to load
+6. **Use HTTPS:** Prevent MITM attacks
+7. **Set CSP headers:** Restrict allowed iframe sources
+8. **Clean up connections:** Call `connection.close()` when done
+
+## Summary
+
+- iframes provide sandboxed execution for isolation
+- postbridge handles cross-origin communication securely
+- Automatic origin validation prevents spoofing
+- Use `sandbox` attribute to restrict permissions
+- Always validate input from iframes
+- Same-origin vs cross-origin affects capabilities
+- Bidirectional communication for rich interactions
+
+**Next steps:**
+- [Security Model](?path=/docs/fundamentals-security--docs) - Deep dive into security
+- [Web Workers Guide](?path=/docs/guides-web-workers--docs) - Alternative isolation
+- [Examples](?path=/docs/examples-workers--docs) - More iframe patterns

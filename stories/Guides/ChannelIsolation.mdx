@@ -1,0 +1,471 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Channel Isolation" />
+
+# Channel Isolation Example: Multi-Channel Counter Demo
+
+This guide walks through the `examples/multi-channel/` demonstration, explaining how channel isolation works in practice with two independent counter applications.
+
+## Overview
+
+The multi-channel example demonstrates Bridge's channel isolation feature by running two completely independent counter applications in the same web page. Each counter operates on a different channel, maintaining separate state and broadcasting only to tabs on the same channel.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Browser Tab                              │
+├─────────────────────────────────────────────────────────────┤
+│  Channel A Counter                                          │
+│  ┌────────────────────────────────┐                         │
+│  │ bridge.connect(schemaA,        │                         │
+│  │   { channel: 'counter-a' })    │                         │
+│  └────────────────────────────────┘                         │
+│                     ↓                                       │
+│  Channel B Counter                                          │
+│  ┌────────────────────────────────┐                         │
+│  │ bridge.connect(schemaB,        │                         │
+│  │   { channel: 'counter-b' })    │                         │
+│  └────────────────────────────────┘                         │
+└─────────────────────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────────┐
+│              SharedWorker (Single Instance)                 │
+├─────────────────────────────────────────────────────────────┤
+│  Channel: 'counter-a'           Channel: 'counter-b'        │
+│  ├─ State: { counter: 5 }       ├─ State: { counter: 3 }    │
+│  ├─ Connected Tabs:              ├─ Connected Tabs:         │
+│  │  - Tab1                       │  - Tab1                  │
+│  │  - Tab2                       │  - Tab2                  │
+│  │  - Tab3                       │  - Tab3                  │
+│  └─ Broadcasts stay              └─ Broadcasts stay         │
+│     within this channel              within this channel    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Implementation Details
+
+### Channel A: Independent Counter
+
+```javascript
+// Schema for Channel A
+const schemaA = {
+  counter: 0,
+  setCounter: (newValue, remote) => {
+    remote.counter = newValue;
+    counterAEl.textContent = newValue;
+    return newValue;
+  },
+};
+
+// Connect to Channel A
+const connectionA = await bridge.connect(schemaA, {
+  workerURL: "/lib/bridge-worker.js",
+  channel: "counter-a", // ← Channel name
+});
+```
+
+**Key Points:**
+
+- Channel name: `'counter-a'`
+- Has its own `counter` state
+- Updates only affect tabs listening on `'counter-a'`
+- Completely isolated from Channel B
+
+### Channel B: Independent Counter
+
+```javascript
+// Schema for Channel B (same structure, different channel)
+const schemaB = {
+  counter: 0,
+  setCounter: (newValue, remote) => {
+    remote.counter = newValue;
+    counterBEl.textContent = newValue;
+    return newValue;
+  },
+};
+
+// Connect to Channel B
+const connectionB = await bridge.connect(schemaB, {
+  workerURL: "/lib/bridge-worker.js",
+  channel: "counter-b", // ← Different channel name
+});
+```
+
+**Key Points:**
+
+- Channel name: `'counter-b'`
+- Has its own separate `counter` state
+- Updates only affect tabs listening on `'counter-b'`
+- Completely isolated from Channel A
+
+### Both in One Tab
+
+```javascript
+// Both connections exist simultaneously
+initChannelA(); // Creates connectionA on 'counter-a'
+initChannelB(); // Creates connectionB on 'counter-b'
+```
+
+**Result:**
+
+- Same browser tab has two independent Bridge connections
+- Same SharedWorker handles both channels internally
+- Zero interference between channels
+
+## How Isolation Works
+
+### State Isolation
+
+Each channel maintains its own isolated state space within the SharedWorker:
+
+```typescript
+// Inside the SharedWorker
+const channels: Map<string, ChannelState> = new Map();
+
+// Channel A has its own state
+channels.set('counter-a', {
+  tabs: Map { 'tab1' => {...}, 'tab2' => {...} },
+  sharedState: { counter: 5 }
+});
+
+// Channel B has its own separate state
+channels.set('counter-b', {
+  tabs: Map { 'tab1' => {...}, 'tab2' => {...} },
+  sharedState: { counter: 3 }
+});
+```
+
+### Broadcast Isolation
+
+When a tab broadcasts on one channel, only tabs on that same channel receive it:
+
+```
+Tab 1 increments Channel A:
+  connectionA.remote.setCounter(6)
+
+  ↓ Broadcast to SharedWorker with channel: 'counter-a'
+
+  SharedWorker receives broadcast:
+    - Looks up channel 'counter-a'
+    - Relays only to tabs in 'counter-a'
+    - Tabs in 'counter-b' never see this message
+
+  ↓ All tabs on 'counter-a' update to 6
+
+  Channel B counters remain at 3 (unaffected)
+```
+
+### Tab Registration
+
+Each tab registers separately for each channel:
+
+```
+Tab 1 opens page:
+  - Connects to 'counter-a' → gets tabID: 'abc123' on channel 'counter-a'
+  - Connects to 'counter-b' → gets tabID: 'def456' on channel 'counter-b'
+
+  (Same tab, different tabIDs, different channels)
+```
+
+## Testing the Example
+
+### Setup
+
+```bash
+# Build the library
+npm run build
+
+# Serve the example
+npx serve .
+
+# Open in browser
+# Navigate to http://localhost:3000/examples/multi-channel/
+```
+
+### Test Scenarios
+
+#### Scenario 1: Independent Updates
+
+1. **Open 2 tabs**
+2. **In Tab 1:**
+   - Click "Increment A"
+   - Observe: Channel A = 1 in both tabs
+   - Observe: Channel B = 0 in both tabs (unchanged)
+3. **In Tab 2:**
+   - Click "Increment B"
+   - Observe: Channel B = 1 in both tabs
+   - Observe: Channel A = 1 in both tabs (unchanged)
+
+**Verification:** Each channel maintains independent state.
+
+#### Scenario 2: Rapid Cross-Channel Updates
+
+1. **Open 3 tabs**
+2. **Rapidly alternate:**
+   - Tab 1: Increment A
+   - Tab 2: Increment B
+   - Tab 3: Increment A
+   - Tab 1: Increment B
+3. **Observe:**
+   - Channel A counter increments only when "Increment A" is clicked
+   - Channel B counter increments only when "Increment B" is clicked
+   - No cross-channel interference
+
+**Verification:** Broadcasts are correctly isolated.
+
+#### Scenario 3: Reset Isolation
+
+1. **Increment both channels several times:**
+   - Channel A = 7
+   - Channel B = 4
+2. **Click "Reset A"**
+3. **Observe:**
+   - Channel A = 0 in all tabs
+   - Channel B = 4 in all tabs (unchanged)
+
+**Verification:** Reset operations are channel-specific.
+
+#### Scenario 4: Multiple Tabs with Mixed Operations
+
+1. **Open 5+ tabs**
+2. **In different tabs, randomly:**
+   - Increment A
+   - Decrement B
+   - Increment B
+   - Reset A
+   - Increment A
+   - Decrement A
+3. **Observe:**
+   - All tabs show identical values for Channel A
+   - All tabs show identical values for Channel B
+   - Channels maintain different values from each other
+
+**Verification:** Each channel synchronizes independently across all tabs.
+
+## Visual Indicators
+
+The example uses subtle visual cues to distinguish channels:
+
+**Channel A:**
+
+- White left border
+- Primary buttons use white
+- Top position
+
+**Channel B:**
+
+- Gray left border
+- Primary buttons use white (same as A)
+- Bottom position
+
+Both maintain a strict black and white color scheme for consistency.
+
+## Common Patterns
+
+### Pattern 1: Feature Isolation
+
+Use different channels for different features in your application:
+
+```javascript
+// Chat feature
+const chatConn = await bridge.connect(chatSchema, {
+  channel: "app-chat",
+});
+
+// Notifications feature
+const notifConn = await bridge.connect(notifSchema, {
+  channel: "app-notifications",
+});
+
+// Dashboard feature
+const dashConn = await bridge.connect(dashSchema, {
+  channel: "app-dashboard",
+});
+```
+
+### Pattern 4: Custom Tab Identifiers
+
+Use custom tabIDs for session management or debugging:
+
+```javascript
+// Session-based identification
+const sessionId = getUserSessionId(); // e.g., 'session-abc123'
+const conn = await bridge.connect(schema, {
+  tabID: sessionId,
+  channel: "user-workspace",
+});
+
+// Now other systems can reference this specific tab
+console.log(`Tab ID: ${conn.id}`); // → 'session-abc123'
+
+// Useful for:
+// - Restoring state after page reload
+// - External systems targeting specific tabs
+// - Consistent logging across sessions
+// - Testing with predictable identifiers
+```
+
+### Pattern 2: Multi-Tenant Isolation
+
+Use channels for tenant-specific state:
+
+```javascript
+const tenantId = getCurrentTenant(); // e.g., 'tenant-123'
+
+const conn = await bridge.connect(schema, {
+  channel: `tenant-${tenantId}`,
+});
+
+// Tenant A and Tenant B never see each other's data
+```
+
+### Pattern 3: Environment-Based Channels
+
+Separate development, staging, and production:
+
+```javascript
+const env = process.env.NODE_ENV; // 'development', 'staging', 'production'
+
+const conn = await bridge.connect(schema, {
+  channel: `app-${env}`,
+});
+
+// Dev and prod environments stay isolated
+```
+
+## Performance Considerations
+
+### Single SharedWorker
+
+All channels use the **same SharedWorker instance**:
+
+- Efficient resource usage
+- One worker handles all channels
+- Channels are logical isolation, not physical
+
+### Overhead
+
+Each channel adds minimal overhead:
+
+- Small memory cost per channel state
+- Negligible performance impact
+- Broadcasts are O(N) where N = tabs on that channel (not total tabs)
+
+### Cleanup
+
+Empty channels are automatically cleaned up:
+
+```javascript
+// When last tab disconnects from a channel
+connection.close();
+
+// SharedWorker removes empty channel:
+if (channel.tabs.size === 0) {
+  channels.delete(channelName);
+}
+```
+
+## Debugging Tips
+
+### Inspect Channel State
+
+```javascript
+// In browser console
+console.log("Channel A:", connectionA.id);
+console.log("Channel B:", connectionB.id);
+console.log("Channel A state:", connectionA.remote.counter);
+console.log("Channel B state:", connectionB.remote.counter);
+```
+
+### Monitor Broadcasts
+
+The SharedWorker logs all activity:
+
+```
+[Bridge Worker] Tab abc123 connected to channel "counter-a"
+[Bridge Worker] Tab def456 connected to channel "counter-b"
+[Bridge Worker] Relayed setCounter from abc123 to 2 tabs on channel "counter-a"
+[Bridge Worker] Relayed setCounter from def456 to 2 tabs on channel "counter-b"
+```
+
+### Verify Isolation
+
+Test that Channel A doesn't affect Channel B:
+
+```javascript
+// Should not see any cross-channel updates
+connectionA.on("setCounter", (result) => {
+  console.log("Channel A updated:", result);
+  // This should NEVER fire when Channel B updates
+});
+
+connectionB.remote.setCounter(42); // Should not trigger Channel A listener
+```
+
+## Troubleshooting
+
+### Problem: Channels Interfering
+
+**Symptom:** Updates to Channel A affect Channel B
+
+**Cause:** Same channel name used for both
+
+**Fix:**
+
+```javascript
+// Wrong - both use same channel
+const connA = await bridge.connect(schemaA, { channel: "counter" });
+const connB = await bridge.connect(schemaB, { channel: "counter" });
+
+// Right - different channels
+const connA = await bridge.connect(schemaA, { channel: "counter-a" });
+const connB = await bridge.connect(schemaB, { channel: "counter-b" });
+```
+
+### Problem: Updates Not Syncing
+
+**Symptom:** Changes in one tab don't appear in others
+
+**Cause:** Tabs connected to different channels
+
+**Fix:** Ensure all tabs use the same channel name for features that should sync.
+
+### Problem: State Mixed Between Channels
+
+**Symptom:** Channel A has properties from Channel B's schema
+
+**Cause:** Channel names were reused or changed between refreshes
+
+**Fix:**
+
+- Use consistent channel names
+- Close old connections before changing channels
+- Clear the page and reconnect all tabs
+
+## Summary
+
+The multi-channel example demonstrates:
+
+**Core Concepts:**
+
+-  Channel-based state isolation
+-  Independent broadcast groups
+-  Same SharedWorker, different channels
+-  No cross-channel interference
+
+**Best Practices:**
+
+- Use descriptive channel names
+- One channel per logical feature/tenant/environment
+- Clean up connections when done
+- Test cross-channel isolation thoroughly
+
+**When to Use:**
+
+- Multiple independent apps in same domain
+- Multi-tenant applications
+- Feature-based isolation
+- Environment separation
+
+This pattern enables building complex multi-feature applications with Bridge while maintaining clean separation of concerns and preventing unintended state mixing.

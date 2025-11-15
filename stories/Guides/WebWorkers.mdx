@@ -1,0 +1,455 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Web Workers" />
+
+# Web Workers Guide
+
+Complete guide to using postbridge with Web Workers for parallel processing in the browser.
+
+## What are Web Workers?
+
+Web Workers are background threads in browsers that allow you to run JavaScript in parallel with the main thread without blocking the UI.
+
+**Benefits:**
+- **Non-blocking:** CPU-intensive work doesn't freeze the UI
+- **Parallel processing:** True multi-threading in the browser
+- **Isolation:** Separate global scope, can't access DOM
+
+**Use cases:**
+- Image/video processing
+- Data parsing and transformation
+- Complex calculations
+- Cryptography
+- Real-time data processing
+
+## Basic Setup
+
+### 1. Create Worker File
+
+**worker.js:**
+```javascript
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  // Expose methods to main thread
+  processImage: (imageData) => {
+    // CPU-intensive processing
+    return processedImageData;
+  },
+
+  calculatePrimes: (max) => {
+    const primes = [];
+    for (let i = 2; i <= max; i++) {
+      if (isPrime(i)) primes.push(i);
+    }
+    return primes;
+  }
+});
+
+function isPrime(n) {
+  for (let i = 2; i <= Math.sqrt(n); i++) {
+    if (n % i === 0) return false;
+  }
+  return true;
+}
+```
+
+### 2. Create Main Thread Code
+
+**main.js:**
+```javascript
+import { host } from 'postbridge';
+
+// Create worker
+const worker = new Worker('worker.js', { type: 'module' });
+
+// Connect with host methods
+const connection = await host.connect(worker, {
+  updateProgress: (percent) => {
+    console.log(`Progress: ${percent}%`);
+  }
+});
+
+// Call worker methods
+const primes = await connection.remote.calculatePrimes(1000);
+console.log('Primes:', primes);
+
+// Cleanup when done
+connection.close();
+```
+
+## Practical Examples
+
+### Example 1: Image Processing
+
+**main.js:**
+```javascript
+import { host, withTransferable } from 'postbridge';
+
+const worker = new Worker('image-worker.js', { type: 'module' });
+const connection = await host.connect(worker, {});
+
+// Get image data from canvas
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+// Process in worker (transfer for efficiency)
+const processed = await connection.remote.applyFilter(
+  withTransferable(t => ({
+    data: t(imageData.data.buffer),
+    width: canvas.width,
+    height: canvas.height
+  }))
+);
+
+// Display result
+const newImageData = new ImageData(
+  new Uint8ClampedArray(processed.data),
+  processed.width,
+  processed.height
+);
+ctx.putImageData(newImageData, 0, 0);
+```
+
+**image-worker.js:**
+```javascript
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  applyFilter: ({ data, width, height }) => {
+    const pixels = new Uint8ClampedArray(data);
+
+    // Apply grayscale filter
+    for (let i = 0; i < pixels.length; i += 4) {
+      const avg = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+      pixels[i] = avg;     // R
+      pixels[i + 1] = avg; // G
+      pixels[i + 2] = avg; // B
+      // pixels[i + 3] is alpha (unchanged)
+    }
+
+    return {
+      data: pixels.buffer,
+      width,
+      height
+    };
+  }
+});
+```
+
+### Example 2: Data Processing with Progress
+
+**main.js:**
+```javascript
+const worker = new Worker('data-worker.js', { type: 'module' });
+
+const connection = await host.connect(worker, {
+  onProgress: (current, total) => {
+    const percent = ((current / total) * 100).toFixed(1);
+    progressBar.style.width = `${percent}%`;
+    progressBar.textContent = `${percent}%`;
+  }
+});
+
+// Process large dataset
+const results = await connection.remote.processDataset(largeData);
+console.log('Processing complete:', results);
+```
+
+**data-worker.js:**
+```javascript
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  processDataset: async (data, remote) => {
+    const results = [];
+    const total = data.length;
+
+    for (let i = 0; i < total; i++) {
+      // Process item
+      results.push(processItem(data[i]));
+
+      // Report progress every 100 items
+      if (i % 100 === 0) {
+        await remote.onProgress(i, total);
+      }
+    }
+
+    // Final progress update
+    await remote.onProgress(total, total);
+
+    return results;
+  }
+});
+```
+
+### Example 3: Worker Pool
+
+**worker-pool.js:**
+```javascript
+import { host } from 'postbridge';
+
+export class WorkerPool {
+  constructor(workerScript, schema, poolSize = 4) {
+    this.workerScript = workerScript;
+    this.schema = schema;
+    this.poolSize = poolSize;
+    this.connections = [];
+    this.available = [];
+    this.initialized = this.init();
+  }
+
+  async init() {
+    const promises = [];
+
+    for (let i = 0; i < this.poolSize; i++) {
+      const worker = new Worker(this.workerScript, { type: 'module' });
+      const promise = host.connect(worker, this.schema).then(conn => {
+        this.connections.push(conn);
+        this.available.push(conn);
+        return conn;
+      });
+      promises.push(promise);
+    }
+
+    await Promise.all(promises);
+  }
+
+  async execute(method, ...args) {
+    await this.initialized;
+
+    // Wait for available connection
+    while (this.available.length === 0) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
+    const conn = this.available.pop();
+
+    try {
+      return await conn.remote[method](...args);
+    } finally {
+      this.available.push(conn);
+    }
+  }
+
+  async close() {
+    await this.initialized;
+    this.connections.forEach(conn => conn.close());
+    this.connections = [];
+    this.available = [];
+  }
+}
+
+// Usage:
+const pool = new WorkerPool('worker.js', {
+  log: (msg) => console.log(msg)
+}, 4);
+
+// Execute tasks in parallel
+const results = await Promise.all([
+  pool.execute('processData', data1),
+  pool.execute('processData', data2),
+  pool.execute('processData', data3),
+  pool.execute('processData', data4),
+]);
+
+pool.close();
+```
+
+## Common Patterns
+
+### Pattern 1: Long-Running Worker
+
+Keep worker alive for multiple operations:
+
+```javascript
+const worker = new Worker('worker.js', { type: 'module' });
+const connection = await host.connect(worker, {});
+
+// Use multiple times
+await connection.remote.task1();
+await connection.remote.task2();
+await connection.remote.task3();
+
+// Close when truly done
+window.addEventListener('beforeunload', () => {
+  connection.close();
+});
+```
+
+### Pattern 2: One-Shot Worker
+
+Create, use once, destroy:
+
+```javascript
+async function runWorkerTask(data) {
+  const worker = new Worker('worker.js', { type: 'module' });
+  const connection = await host.connect(worker, {});
+
+  try {
+    return await connection.remote.process(data);
+  } finally {
+    connection.close(); // Terminates worker
+  }
+}
+```
+
+### Pattern 3: Worker with Shared State
+
+Initialize worker with configuration:
+
+```javascript
+// main.js
+const connection = await host.connect(worker, {
+  getConfig: () => ({
+    apiKey: 'abc123',
+    endpoint: 'https://api.example.com'
+  })
+});
+
+// worker.js
+let config;
+
+const connection = await guest.connect({
+  process: async (data) => {
+    // Use config loaded during setup
+    const response = await fetch(config.endpoint, {
+      headers: { 'Authorization': config.apiKey }
+    });
+    return response.json();
+  }
+}, {
+  onConnectionSetup: async (remote) => {
+    // Load config during handshake
+    config = await remote.getConfig();
+  }
+});
+```
+
+## Performance Tips
+
+### 1. Use Transferables for Large Data
+
+```javascript
+//  Slow: Copies 10MB
+const buffer = new ArrayBuffer(10 * 1024 * 1024);
+await connection.remote.process({ buffer });
+
+//  Fast: Transfers 10MB (zero-copy)
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+```
+
+### 2. Batch Operations
+
+```javascript
+//  Slow: 1000 RPC calls
+for (const item of items) {
+  await connection.remote.process(item);
+}
+
+//  Fast: 1 RPC call
+await connection.remote.processBatch(items);
+```
+
+### 3. Use Worker Pool for Parallelism
+
+```javascript
+// Process 100 items across 4 workers
+const pool = new WorkerPool('worker.js', {}, 4);
+const results = await Promise.all(
+  items.map(item => pool.execute('process', item))
+);
+```
+
+## Debugging Workers
+
+### Console Logging
+
+Worker console output appears in browser DevTools:
+
+```javascript
+// worker.js
+console.log('Worker started');
+console.log('Processing data...');
+```
+
+### Error Handling
+
+```javascript
+// main.js
+worker.addEventListener('error', (event) => {
+  console.error('Worker error:', event.message, event.filename, event.lineno);
+});
+
+worker.addEventListener('messageerror', (event) => {
+  console.error('Message error:', event);
+});
+
+// RPC errors
+try {
+  await connection.remote.process(data);
+} catch (error) {
+  console.error('RPC error:', error);
+}
+```
+
+### Chrome DevTools
+
+1. Open DevTools → Sources
+2. Workers appear in left sidebar
+3. Set breakpoints in worker code
+4. Debug like regular JavaScript
+
+## Browser Compatibility
+
+Web Workers are supported in all modern browsers:
+
+- Chrome 4+
+- Firefox 3.5+
+- Safari 4+
+- Edge (all versions)
+- Opera 10.6+
+
+**Module workers (`type: 'module'`):**
+- Chrome 80+
+- Firefox 114+
+- Safari 15+
+- Edge 80+
+
+**Fallback for older browsers:**
+```javascript
+if (typeof Worker !== 'undefined') {
+  // Use Web Workers
+  const worker = new Worker('worker.js', { type: 'module' });
+  const connection = await host.connect(worker, {});
+} else {
+  // Fallback to main thread
+  console.warn('Web Workers not supported, running in main thread');
+  import('./worker-logic.js').then(module => {
+    // Run directly
+  });
+}
+```
+
+## Limitations
+
+1. **No DOM access:** Workers can't access document, window, or DOM elements
+2. **No synchronous operations:** All communication is async
+3. **Data must be serializable:** Can't send functions or DOM nodes
+4. **Separate global scope:** No shared variables
+
+## Summary
+
+- Web Workers enable parallel processing without blocking UI
+- postbridge makes worker communication feel like local function calls
+- Use transferables for large binary data
+- Worker pools enable true parallel processing
+- Always close connections to free resources
+
+**Next steps:**
+- [iframes Guide](?path=/docs/guides-iframes--docs) for cross-frame communication
+- [Transferables Guide](?path=/docs/guides-transferables--docs) for efficient data transfer
+- [Examples](?path=/docs/examples-workers--docs) for more real-world patterns

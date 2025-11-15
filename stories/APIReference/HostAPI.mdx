@@ -1,0 +1,459 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="API Reference/host API" />
+
+# Host API Reference
+
+Complete API reference for the host module.
+
+## host.connect()
+
+Establishes a connection from a host (parent context) to a guest (worker, iframe, or child process).
+
+### Signature
+
+```typescript
+function connect<HostSchema, GuestSchema>(
+  guest: Guest,
+  schema?: HostSchema
+): Promise<Connection<GuestSchema>>
+```
+
+### Parameters
+
+#### `guest` (required)
+The guest context to connect to.
+
+**Type:** `Guest`
+
+**Supported types:**
+```typescript
+type Guest =
+
+  | Worker              // Web Worker
+  | SharedWorker        // Shared Worker
+  | HTMLIFrameElement   // iframe element
+  | MessagePort         // Message port
+  | NodeWorker          // Node.js Worker (worker_threads)
+
+```
+
+**Examples:**
+```javascript
+// Web Worker
+const worker = new Worker('worker.js', { type: 'module' });
+await host.connect(worker, schema);
+
+// SharedWorker
+const sharedWorker = new SharedWorker('worker.js');
+await host.connect(sharedWorker, schema);
+
+// iframe
+const iframe = document.getElementById('my-iframe');
+await host.connect(iframe, schema);
+
+// Node.js Worker
+const { Worker } = require('worker_threads');
+const worker = new Worker('./worker.js');
+await host.connect(worker, schema);
+```
+
+#### `schema` (optional)
+Object defining methods and data to expose to the guest.
+
+**Type:** `Schema = Record<string, any>`
+
+**Default:** `{}`
+
+**Structure:**
+```typescript
+interface Schema {
+  // Functions: Exposed as callable methods
+  [key: string]: Function | NestedSchema | any;
+}
+
+// Nested schemas allowed
+interface NestedSchema {
+  [key: string]: Function | NestedSchema | any;
+}
+```
+
+**Examples:**
+```javascript
+// Simple schema
+{
+  log: (msg) => console.log(msg),
+  getData: () => ({ value: 42 })
+}
+
+// Nested schema
+{
+  math: {
+    add: (a, b) => a + b,
+    multiply: (a, b) => a * b
+  },
+  string: {
+    uppercase: (s) => s.toUpperCase()
+  }
+}
+
+// With configuration data
+{
+  // Functions (exposed as methods)
+  processData: (data) => process(data),
+
+  // Non-function data (passed in schema, not callable)
+  config: {
+    version: '1.0',
+    features: ['feature1', 'feature2']
+  }
+}
+
+// Async methods
+{
+  fetchData: async (url) => {
+    const response = await fetch(url);
+    return response.json();
+  }
+}
+
+// Methods with remote parameter (bidirectional RPC)
+{
+  processWithLogging: async (data, remote) => {
+    await remote.log('Processing started');
+    const result = process(data);
+    await remote.log('Processing complete');
+    return result;
+  }
+}
+```
+
+### Return Value
+
+Returns a `Promise` that resolves to a `Connection` object.
+
+**Type:** `Promise<Connection<GuestSchema>>`
+
+#### Connection Object
+
+```typescript
+interface Connection<RemoteSchema = any> {
+  // Unique connection identifier
+  id: string;
+
+  // Proxy object for calling guest methods
+  remote: RemoteSchema;
+
+  // Function to close connection and cleanup resources
+  close: () => void;
+}
+```
+
+**Fields:**
+
+##### `id: string`
+Unique identifier for this connection.
+
+```javascript
+const connection = await host.connect(worker, schema);
+console.log(connection.id); // "1699901234567-k2j5h3g8f"
+```
+
+##### `remote: RemoteSchema`
+Proxy object containing guest's methods. Each method returns a `Promise`.
+
+```javascript
+const connection = await host.connect(worker, schema);
+
+// Call guest methods
+const result = await connection.remote.processData([1, 2, 3]);
+const sum = await connection.remote.calculateSum([1, 2, 3]);
+
+// Nested methods
+await connection.remote.math.add(5, 3);
+```
+
+**Important:** All remote methods are asynchronous, even if the original method is synchronous.
+
+```javascript
+// Guest exposes sync method
+const guestSchema = {
+  add: (a, b) => a + b // Synchronous
+};
+
+// Host must await
+const result = await connection.remote.add(5, 3); // Must await!
+```
+
+##### `close: () => void`
+Closes the connection and cleans up resources.
+
+```javascript
+const connection = await host.connect(worker, schema);
+
+// Use connection
+await connection.remote.doWork();
+
+// Clean up
+connection.close();
+```
+
+**What close() does:**
+1. Removes connection from global connections map
+2. Removes all event listeners
+3. Clears RPC handlers
+4. Terminates worker (if guest is a Worker)
+5. Frees memory
+
+**Important:** Always call `close()` when done to prevent memory leaks.
+
+```javascript
+//  Good: Always cleanup
+try {
+  await connection.remote.doWork();
+} finally {
+  connection.close();
+}
+
+//  Bad: Never closed (memory leak)
+await connection.remote.doWork();
+// connection never closed
+```
+
+### TypeScript Support
+
+Full type safety with TypeScript:
+
+```typescript
+import { host, Connection } from 'postbridge';
+
+// Define schemas
+interface HostSchema {
+  log: (msg: string) => void;
+  getData: () => Promise<{ value: number }>;
+}
+
+interface GuestSchema {
+  processData: (data: number[]) => Promise<number[]>;
+  calculateSum: (numbers: number[]) => Promise<number>;
+}
+
+// Type-safe connection
+const worker = new Worker('worker.js', { type: 'module' });
+const connection = await host.connect<HostSchema, GuestSchema>(worker, {
+  log: (msg) => console.log(msg),
+  getData: async () => ({ value: 42 })
+});
+
+// Type-safe remote calls
+const result = await connection.remote.processData([1, 2, 3]); // number[]
+const sum = await connection.remote.calculateSum([1, 2, 3]); // number
+
+//  TypeScript error: method doesn't exist
+await connection.remote.unknownMethod();
+
+//  TypeScript error: wrong argument type
+await connection.remote.processData("not an array");
+```
+
+### Examples
+
+#### Basic Worker Connection
+
+```javascript
+import { host } from 'postbridge';
+
+const worker = new Worker('worker.js', { type: 'module' });
+
+const connection = await host.connect(worker, {
+  log: (message) => console.log('[Worker]:', message),
+  getConfig: () => ({
+    apiKey: process.env.API_KEY,
+    debug: true
+  })
+});
+
+// Use connection
+const result = await connection.remote.processData([1, 2, 3]);
+console.log('Result:', result);
+
+// Cleanup
+connection.close();
+```
+
+#### Multiple Workers
+
+```javascript
+// Connect to multiple workers
+const worker1 = new Worker('worker1.js', { type: 'module' });
+const worker2 = new Worker('worker2.js', { type: 'module' });
+
+const conn1 = await host.connect(worker1, schema);
+const conn2 = await host.connect(worker2, schema);
+
+// Each connection is independent
+await conn1.remote.task1();
+await conn2.remote.task2();
+
+// Different connection IDs
+console.log(conn1.id); // "abc123..."
+console.log(conn2.id); // "def456..."
+
+// Close individually
+conn1.close();
+conn2.close();
+```
+
+#### iframe Connection
+
+```javascript
+const iframe = document.getElementById('my-iframe');
+
+const connection = await host.connect(iframe, {
+  config: { theme: 'dark' },
+  notifyUser: (message) => {
+    alert(message);
+  }
+});
+
+// Call iframe methods
+await connection.remote.render({ content: 'Hello!' });
+```
+
+#### Error Handling
+
+```javascript
+const worker = new Worker('worker.js', { type: 'module' });
+
+// Handle worker errors
+worker.addEventListener('error', (error) => {
+  console.error('Worker error:', error);
+});
+
+try {
+  const connection = await host.connect(worker, {});
+
+  // Call method that might fail
+  const result = await connection.remote.riskyOperation();
+} catch (error) {
+  console.error('RPC error:', error);
+} finally {
+  connection.close();
+}
+```
+
+#### With Transferables
+
+```javascript
+import { host, withTransferable } from 'postbridge';
+
+const worker = new Worker('worker.js', { type: 'module' });
+const connection = await host.connect(worker, {});
+
+// Transfer large buffer
+const buffer = new ArrayBuffer(10 * 1024 * 1024);
+const result = await connection.remote.processBuffer(
+  withTransferable(t => t(buffer))
+);
+
+// buffer is now detached
+console.log(buffer.byteLength); // 0
+
+connection.close();
+```
+
+### Error Scenarios
+
+#### Guest Never Responds
+
+```javascript
+const worker = new Worker('broken-worker.js');
+
+// This promise never resolves if worker doesn't call guest.connect()
+const connection = await host.connect(worker, {});
+// Hangs forever
+
+// Solution: Add timeout
+const timeout = new Promise((_, reject) =>
+  setTimeout(() => reject(new Error('Connection timeout')), 5000)
+);
+
+const connection = await Promise.race([
+  host.connect(worker, {}),
+  timeout
+]);
+```
+
+#### Invalid Guest
+
+```javascript
+//  Error: guest is null
+await host.connect(null, {});
+// Error: "a target is required"
+
+//  Error: Invalid guest type
+await host.connect({ invalid: 'object' }, {});
+// May error or hang
+```
+
+#### iframe Security Rejection
+
+```javascript
+// iframe from different origin
+const iframe = document.getElementById('external-iframe');
+iframe.src = 'https://evil.com/page.html';
+
+// Handshake silently rejected if origin doesn't match
+const connection = await host.connect(iframe, {});
+// Promise never resolves (security protection)
+```
+
+### Performance Considerations
+
+- **Connection overhead:** ~2-5ms for handshake
+- **Memory per connection:** ~10KB (connection object + handlers)
+- **Multiple connections:** No significant overhead, each is independent
+- **Message latency:** ~1-2ms per RPC call
+
+### Best Practices
+
+1. **Always close connections:**
+```javascript
+try {
+  await connection.remote.doWork();
+} finally {
+  connection.close();
+}
+```
+
+2. **Handle worker errors:**
+```javascript
+worker.addEventListener('error', handleError);
+```
+
+3. **Use TypeScript for type safety:**
+```typescript
+const connection = await host.connect<HostSchema, GuestSchema>(worker, schema);
+```
+
+4. **Validate guest exists:**
+```javascript
+if (!worker) {
+  throw new Error('Worker not available');
+}
+const connection = await host.connect(worker, schema);
+```
+
+5. **Clean up on page unload:**
+```javascript
+window.addEventListener('beforeunload', () => {
+  connection.close();
+});
+```
+
+## See Also
+
+- [guest.connect()](?path=/docs/api-reference-guest-api--docs) - Guest-side connection
+- [Connection Object](?path=/docs/api-reference-connection--docs) - Connection details
+- [Host Component](?path=/docs/introduction--docs) - Implementation details
+- [Web Workers Guide](?path=/docs/guides-web-workers--docs) - Worker patterns

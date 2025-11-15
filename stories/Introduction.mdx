@@ -1,0 +1,202 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Introduction" />
+
+# PostBridge Documentation
+
+Welcome to **PostBridge** - a lightweight, type-safe RPC library that makes cross-context communication in JavaScript feel natural and intuitive.
+
+##  What is PostBridge?
+
+PostBridge abstracts away the complexity of `postMessage`, handshakes, and message routing, letting you focus on your application logic. It works across multiple communication patterns:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         PostBridge                              │
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐     │
+│  │   1:1 RPC    │  │  Cross-Tab   │  │  Direct Messaging  │     │
+│  │ Host ↔ Guest │  │  Broadcasting│  │   Tab → Tab        │     │
+│  └──────────────┘  └──────────────┘  └────────────────────┘     │
+│                                                                 │
+│  • iframes          • SharedWorkers    • Tab-to-Tab P2P         │
+│  • Web Workers      • Multi-tab sync   • Targeted messages      │
+│  • Node.js Workers  • State broadcast  • Channel isolation      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+-  **Bidirectional** - Both sides can call each other's functions
+-  **Multiple Patterns** - 1:1 (host/guest), 1:N (broadcasting), or 1:1 targeted messaging
+-  **Async by Default** - All RPC calls return Promises
+-  **Transferables** - Efficient zero-copy binary data transfer
+-  **Type-Safe** - Full TypeScript support
+-  **Cross-Platform** - Works in browsers and Node.js
+-  **Zero Dependencies** - Lightweight and self-contained
+
+##  Communication Patterns
+
+PostBridge supports three main communication patterns:
+
+### Host/Guest (1:1 Communication)
+
+Perfect for iframe ↔ parent, worker ↔ main thread communication.
+
+```
+┌─────────────┐                         ┌─────────────┐
+│    Host     │ ←─────────────────────→ │    Guest    │
+│ (Main Page) │    Bidirectional RPC    │ (iframe or  │
+│             │                         │   worker)   │
+└─────────────┘                         └─────────────┘
+```
+
+### Cross-Tab Broadcasting (1:N Communication)
+
+Broadcast state changes across all browser tabs using SharedWorkers.
+
+```
+            ┌─────────────────────────────────┐
+            │      SharedWorker (Relay)       │
+            └─────────────────────────────────┘
+                     ↑       ↑       ↑
+                     │       │       │
+              ┌──────┘       │       └──────┐
+              │              │              │
+          ┌───↓───┐      ┌───↓───┐      ┌───↓───┐
+          │ Tab 1 │      │ Tab 2 │      │ Tab 3 │
+          │       │      │       │      │       │
+          └───────┘      └───────┘      └───────┘
+           Broadcast → All tabs see the update
+```
+
+### Direct Messaging (1:1 Targeted)
+
+Send messages to specific tabs for peer-to-peer communication.
+
+```
+            ┌─────────────────────────────────┐
+            │      SharedWorker (Router)      │
+            └─────────────────────────────────┘
+                     ↑                  ↓
+                     │                  │
+              ┌──────┘                  └─────┐
+              │                               │
+          ┌───↓───┐                       ┌───↓───┐
+          │ Tab 1 │ ── Direct Message ──→ │ Tab 2 │
+          │       │     (Tab 2 only)      │       │
+          └───────┘                       └───────┘
+```
+
+##  Documentation Structure
+
+This documentation is organized into several sections:
+
+###  Getting Started
+Quick start guides to get you up and running with postbridge in minutes.
+
+###  Fundamentals
+Core concepts and technologies that power postbridge:
+- What are RPCs?
+- The postMessage API
+- JavaScript Contexts
+- Security Model
+
+### Architecture
+Deep dive into postbridge's design and implementation:
+- Architecture Overview
+- Handshake Protocol
+- Message Flow
+- Connection Lifecycle
+
+###  Guides
+Practical guides for common use cases:
+- Web Workers, iframes, Node.js Workers
+- Cross-tab broadcasting and direct messaging
+- Transferables, Error Handling
+- Advanced patterns and best practices
+
+###  API Reference
+Complete API documentation with all methods and types.
+
+###  Examples
+Real-world code examples demonstrating postbridge features.
+
+##  Quick Examples
+
+### Host/Guest Pattern (1:1)
+
+**Host (Main Thread):**
+```javascript
+import { host } from 'postbridge';
+
+const worker = new Worker('worker.js');
+const connection = await host.connect(worker, {
+  logMessage: (msg) => console.log('Host:', msg)
+});
+
+// Call worker methods
+const result = await connection.remote.multiply(5, 3);
+console.log(result); // 15
+```
+
+**Guest (Worker):**
+```javascript
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  multiply: (a, b) => a * b
+});
+
+// Call host methods
+await connection.remote.logMessage('Hello from worker!');
+```
+
+### Cross-Tab Broadcasting (1:N)
+
+```javascript
+import { bridge } from 'postbridge';
+
+// Define schema (same code in all tabs)
+const schema = {
+  updateCount: (count, remote) => {
+    updateUI(count); // This runs in ALL tabs!
+  }
+};
+
+// Connect
+const conn = await bridge.connect(schema);
+
+// Broadcast to all tabs
+await conn.remote.updateCount(42);
+//  Executes locally
+//  Broadcasts to all other tabs
+```
+
+### Direct Tab-to-Tab (1:1 Targeted)
+
+```javascript
+import { bridge } from 'postbridge';
+
+const conn = await bridge.connect(schema);
+
+// Get all connected tabs
+const tabs = await conn.getConnectedTabs();
+
+// Send to specific tab only
+await conn.remote(targetTabId).sendMessage('Hi there!');
+```
+
+##  Ready to Start?
+
+Choose your path based on what you're building:
+
+- **New to RPC?** Start with [Fundamentals → RPC Basics](?path=/docs/fundamentals-rpc-basics--docs)
+- **Ready to code?** Jump to [Getting Started → Quick Start](?path=/docs/getting-started-quick-start--docs)
+- **Multi-tab sync?** Check out the [Cross-Tab Broadcasting Guide](?path=/docs/guides-bridge--docs)
+- **Looking for examples?** Browse [Examples](?path=/docs/examples-workers--docs)
+
+---
+
+**Let's build something amazing!** 
+

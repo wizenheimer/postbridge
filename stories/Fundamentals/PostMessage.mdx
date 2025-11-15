@@ -1,0 +1,592 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Fundamentals/postMessage API" />
+
+# The postMessage API
+
+The `postMessage` API is the **foundation** of all cross-context communication in JavaScript. Understanding it is crucial to understanding how postbridge works under the hood.
+
+## What is postMessage?
+
+`postMessage` is a browser and Node.js API that allows **safe communication** between isolated JavaScript execution contexts. It's the only way to send data between:
+
+- Main thread ↔ Web Worker
+- Parent window ↔ iframe
+- Main thread ↔ Node.js Worker thread
+- Window ↔ SharedWorker
+
+## Why postMessage Exists
+
+### The Isolation Problem
+
+JavaScript contexts are intentionally isolated for **security and stability**:
+
+```
+┌──────────────────────────┐
+│     Main Thread          │
+│  - Global scope          │
+│  - window object         │
+│  - DOM access            │
+│  - Cannot share memory   │
+└──────────────────────────┘
+            ║
+            ║ (isolated)
+            ║
+┌──────────────────────────┐
+│      Web Worker          │
+│  - Separate global scope │
+│  - NO window object      │
+│  - NO DOM access         │
+│  - Cannot access parent  │
+└──────────────────────────┘
+```
+
+**Without postMessage, these contexts cannot communicate at all.**
+
+### Security Benefits
+
+Isolation prevents:
+- **Malicious iframes** from accessing parent page data
+- **Worker crashes** from affecting the main thread
+- **Accidental variable sharing** between contexts
+- **Cross-origin attacks** (with origin validation)
+
+### The Trade-off
+
+The price of isolation is **message passing** - you can't call functions directly, you must send serialized messages.
+
+## How postMessage Works
+
+### Basic Syntax
+
+**Sending a message:**
+```javascript
+targetContext.postMessage(message, targetOrigin, transferables);
+```
+
+**Receiving a message:**
+```javascript
+self.addEventListener('message', (event) => {
+  console.log('Received:', event.data);
+});
+```
+
+### Parameters
+
+#### 1. `message` (required)
+The data to send. Must be **structured-clonable**:
+
+```javascript
+//  Valid messages
+worker.postMessage('Hello');
+worker.postMessage(42);
+worker.postMessage({ name: 'Alice', age: 30 });
+worker.postMessage([1, 2, 3, { nested: true }]);
+worker.postMessage(new ArrayBuffer(1024));
+
+//  Invalid messages
+worker.postMessage(() => console.log('hi')); // Functions
+worker.postMessage(document.body); // DOM nodes
+worker.postMessage(new WebSocket('ws://...')); // Sockets
+```
+
+#### 2. `targetOrigin` (for windows/iframes)
+Security feature - only deliver message if target has this origin:
+
+```javascript
+// Only send if iframe is from example.com
+iframe.contentWindow.postMessage(data, 'https://example.com');
+
+// Send to any origin (unsafe!)
+iframe.contentWindow.postMessage(data, '*');
+```
+
+#### 3. `transferables` (optional)
+Array of objects to **transfer ownership** instead of copying:
+
+```javascript
+const buffer = new ArrayBuffer(1024 * 1024); // 1MB
+worker.postMessage({ buffer }, [buffer]);
+// buffer is now detached (unusable in this context)
+```
+
+## The Message Event
+
+When a message arrives, you receive a `MessageEvent`:
+
+```javascript
+self.addEventListener('message', (event) => {
+  console.log('Data:', event.data);          // The message
+  console.log('Origin:', event.origin);      // Sender's origin
+  console.log('Source:', event.source);      // Sender's window/port
+  console.log('Ports:', event.ports);        // MessagePort array
+});
+```
+
+### Key Properties
+
+#### `event.data`
+The actual message content:
+```javascript
+worker.postMessage({ type: 'command', value: 42 });
+// In worker:
+self.addEventListener('message', (event) => {
+  console.log(event.data.type); // 'command'
+  console.log(event.data.value); // 42
+});
+```
+
+#### `event.origin`
+The origin of the sender (for security checking):
+```javascript
+window.addEventListener('message', (event) => {
+  // Validate sender
+  if (event.origin !== 'https://trusted.com') {
+    console.warn('Untrusted origin:', event.origin);
+    return; // Ignore message
+  }
+
+  // Process message
+  handleMessage(event.data);
+});
+```
+
+#### `event.source`
+Reference to the sender (for replying):
+```javascript
+window.addEventListener('message', (event) => {
+  console.log('Got message:', event.data);
+
+  // Reply to sender
+  event.source.postMessage('Got it!', event.origin);
+});
+```
+
+## postMessage Across Different Contexts
+
+### Web Workers
+
+**Main thread → Worker:**
+```javascript
+const worker = new Worker('worker.js');
+worker.postMessage('Hello worker!');
+```
+
+**Worker → Main thread:**
+```javascript
+// In worker.js
+self.postMessage('Hello main thread!');
+```
+
+**Listening:**
+```javascript
+// Main thread
+worker.addEventListener('message', (event) => {
+  console.log('From worker:', event.data);
+});
+
+// Worker
+self.addEventListener('message', (event) => {
+  console.log('From main:', event.data);
+});
+```
+
+### iframes
+
+**Parent → iframe:**
+```javascript
+const iframe = document.getElementById('myFrame');
+iframe.contentWindow.postMessage('Hello iframe!', 'https://example.com');
+```
+
+**iframe → Parent:**
+```javascript
+// In iframe
+window.parent.postMessage('Hello parent!', 'https://parent.com');
+```
+
+**Listening:**
+```javascript
+// Parent
+window.addEventListener('message', (event) => {
+  if (event.source === iframe.contentWindow) {
+    console.log('From iframe:', event.data);
+  }
+});
+
+// iframe
+window.addEventListener('message', (event) => {
+  if (event.source === window.parent) {
+    console.log('From parent:', event.data);
+  }
+});
+```
+
+### Node.js Worker Threads
+
+**Main thread → Worker:**
+```javascript
+const { Worker } = require('worker_threads');
+const worker = new Worker('./worker.js');
+worker.postMessage('Hello worker!');
+```
+
+**Worker → Main thread:**
+```javascript
+// In worker.js
+const { parentPort } = require('worker_threads');
+parentPort.postMessage('Hello main!');
+```
+
+**Listening:**
+```javascript
+// Main thread
+worker.on('message', (data) => {
+  console.log('From worker:', data);
+});
+
+// Worker
+parentPort.on('message', (data) => {
+  console.log('From main:', data);
+});
+```
+
+### SharedWorker
+
+**Main thread → SharedWorker:**
+```javascript
+const worker = new SharedWorker('worker.js');
+worker.port.postMessage('Hello shared worker!');
+worker.port.start();
+```
+
+**SharedWorker → Main thread:**
+```javascript
+// In worker.js
+self.onconnect = (event) => {
+  const port = event.ports[0];
+  port.postMessage('Hello main!');
+};
+```
+
+## The Structured Clone Algorithm
+
+postMessage uses the **Structured Clone Algorithm** to serialize data:
+
+### What Gets Cloned
+
+```javascript
+// Primitives
+postMessage(42);               // Number
+postMessage('hello');          // String
+postMessage(true);             // Boolean
+postMessage(null);             // null
+postMessage(undefined);        // undefined
+
+// Collections
+postMessage([1, 2, 3]);        // Arrays
+postMessage({ a: 1, b: 2 });   // Plain objects
+postMessage(new Map([[1, 'a']])); // Maps
+postMessage(new Set([1, 2]));  // Sets
+
+// Built-in types
+postMessage(new Date());       // Dates
+postMessage(/regex/gi);        // RegExp
+postMessage(new ArrayBuffer(10)); // ArrayBuffer
+postMessage(new Int32Array(10));  // TypedArrays
+
+// Special objects
+postMessage(new Blob(['data'])); // Blobs
+postMessage(new ImageData(10, 10)); // ImageData
+```
+
+### What Doesn't Get Cloned
+
+```javascript
+//  Functions
+postMessage(() => console.log('hi'));
+// Error: DataCloneError
+
+//  DOM nodes
+postMessage(document.getElementById('btn'));
+// Error: DataCloneError
+
+//  Symbols
+postMessage(Symbol('id'));
+// Error: DataCloneError
+
+//  Methods on objects
+class Person {
+  constructor(name) { this.name = name; }
+  greet() { return `Hello, ${this.name}`; }
+}
+postMessage(new Person('Alice'));
+// Receives: { name: 'Alice' } (greet method is lost!)
+
+//  Circular references
+const obj = { a: 1 };
+obj.self = obj;
+postMessage(obj);
+// Error: DataCloneError
+```
+
+## Transferable Objects
+
+### The Problem: Copying is Slow
+
+By default, postMessage **copies** data:
+
+```javascript
+const largeBuffer = new ArrayBuffer(100 * 1024 * 1024); // 100MB
+worker.postMessage({ buffer: largeBuffer });
+// Copies all 100MB! Takes time and doubles memory usage.
+```
+
+### The Solution: Transfer Ownership
+
+**Transferable objects** move ownership instead of copying:
+
+```javascript
+const largeBuffer = new ArrayBuffer(100 * 1024 * 1024); // 100MB
+worker.postMessage({ buffer: largeBuffer }, [largeBuffer]);
+// No copy! Instant transfer. largeBuffer is now detached (unusable).
+```
+
+### What's Transferable?
+
+Only certain types can be transferred:
+
+```javascript
+//  Transferable
+- ArrayBuffer
+- MessagePort
+- ReadableStream
+- WritableStream
+- TransformStream
+- AudioData
+- ImageBitmap
+- VideoFrame
+- OffscreenCanvas
+```
+
+### Transfer Example
+
+```javascript
+// Before transfer
+const buffer = new ArrayBuffer(1024);
+console.log(buffer.byteLength); // 1024
+
+// Transfer to worker
+worker.postMessage({ data: buffer }, [buffer]);
+
+// After transfer
+console.log(buffer.byteLength); // 0 (detached!)
+
+// In worker:
+self.addEventListener('message', (event) => {
+  console.log(event.data.data.byteLength); // 1024 (now owned by worker)
+});
+```
+
+## postMessage Limitations
+
+### 1. Serialization Overhead
+Converting objects to/from messages takes time:
+
+```javascript
+// Fast: small messages
+worker.postMessage({ count: 5 });
+
+// Slow: large objects
+worker.postMessage({ data: new Array(1000000).fill(0) });
+```
+
+### 2. No Synchronous Communication
+You can't wait for a response synchronously:
+
+```javascript
+//  Can't do this
+const result = worker.postMessage('calculate');
+
+//  Must do this
+worker.postMessage('calculate');
+worker.addEventListener('message', (event) => {
+  const result = event.data;
+});
+```
+
+### 3. Message Ordering
+Messages are queued and processed in order, but timing is unpredictable:
+
+```javascript
+worker.postMessage('first');
+worker.postMessage('second');
+// Worker receives them in order, but not instantly
+```
+
+### 4. No Built-in Request/Response Pattern
+You must manually match requests with responses:
+
+```javascript
+// Main thread
+const requestId = Math.random();
+worker.postMessage({ id: requestId, action: 'add', args: [5, 3] });
+
+worker.addEventListener('message', (event) => {
+  if (event.data.id === requestId) {
+    console.log('Result:', event.data.result);
+  }
+});
+
+// Worker
+self.addEventListener('message', (event) => {
+  if (event.data.action === 'add') {
+    const result = event.data.args[0] + event.data.args[1];
+    self.postMessage({ id: event.data.id, result });
+  }
+});
+```
+
+This is tedious! **This is exactly what postbridge simplifies.**
+
+## Security Considerations
+
+### Always Validate Origin (for iframes)
+
+```javascript
+window.addEventListener('message', (event) => {
+  //  DANGEROUS: Accept any origin
+  handleMessage(event.data);
+
+  //  SAFE: Validate origin
+  if (event.origin !== 'https://trusted.com') {
+    return;
+  }
+  handleMessage(event.data);
+});
+```
+
+### Never Use '*' for Sensitive Data
+
+```javascript
+//  DANGEROUS: Any iframe can receive this
+iframe.contentWindow.postMessage(sensitiveData, '*');
+
+//  SAFE: Only target origin receives it
+iframe.contentWindow.postMessage(sensitiveData, 'https://trusted.com');
+```
+
+### Validate Message Content
+
+```javascript
+window.addEventListener('message', (event) => {
+  // Validate structure
+  if (typeof event.data !== 'object' || !event.data.action) {
+    console.warn('Invalid message format');
+    return;
+  }
+
+  // Validate action
+  const allowedActions = ['save', 'load', 'delete'];
+  if (!allowedActions.includes(event.data.action)) {
+    console.warn('Invalid action:', event.data.action);
+    return;
+  }
+
+  // Process message
+  handleMessage(event.data);
+});
+```
+
+## How postbridge Uses postMessage
+
+postbridge is built on top of postMessage, adding:
+
+### 1. Automatic Message Routing
+```javascript
+// postMessage: Manual routing
+worker.addEventListener('message', (event) => {
+  if (event.data.action === 'ADD') { /* ... */ }
+  else if (event.data.action === 'MULTIPLY') { /* ... */ }
+});
+
+// postbridge: Automatic routing
+const connection = await guest.connect({
+  add: (a, b) => a + b,
+  multiply: (a, b) => a * b
+});
+```
+
+### 2. Request/Response Matching
+```javascript
+// postMessage: Manual matching
+const callbacks = {};
+const callId = generateId();
+callbacks[callId] = (result) => console.log(result);
+worker.postMessage({ callId, method: 'add', args: [5, 3] });
+worker.addEventListener('message', (event) => {
+  callbacks[event.data.callId]?.(event.data.result);
+});
+
+// postbridge: Automatic matching
+const result = await connection.remote.add(5, 3);
+console.log(result);
+```
+
+### 3. Promise-Based API
+```javascript
+// postMessage: Callback-based
+worker.postMessage({ method: 'add', args: [5, 3] });
+worker.addEventListener('message', (event) => {
+  console.log('Result:', event.data.result);
+});
+
+// postbridge: Promise-based
+const result = await connection.remote.add(5, 3);
+console.log('Result:', result);
+```
+
+### 4. Error Propagation
+```javascript
+// postMessage: Manual error handling
+worker.postMessage({ method: 'divide', args: [10, 0] });
+worker.addEventListener('message', (event) => {
+  if (event.data.error) {
+    console.error('Error:', event.data.error);
+  } else {
+    console.log('Result:', event.data.result);
+  }
+});
+
+// postbridge: Automatic error propagation
+try {
+  const result = await connection.remote.divide(10, 0);
+} catch (error) {
+  console.error('Error:', error); // Thrown as if local!
+}
+```
+
+## Summary
+
+**postMessage:**
+- Foundation of cross-context communication
+- Uses Structured Clone Algorithm for serialization
+- Supports transferable objects for efficiency
+- Requires manual message routing and matching
+- Security through origin validation
+
+**postbridge enhances postMessage with:**
+- Automatic message routing
+- Request/response matching
+- Promise-based API
+- Error propagation
+- Type safety
+
+**Next steps:**
+- Learn about [JavaScript Contexts](./contexts.md) - Where postMessage is used
+- Understand [Security Model](?path=/docs/fundamentals-security--docs) - How to use postMessage safely
+- Review [Architecture](?path=/docs/architecture-overview--docs) - How postbridge builds on postMessage
+
+---
+
+Now you understand the low-level postMessage API that powers all cross-context communication!

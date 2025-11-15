@@ -1,0 +1,126 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Examples/Bridge" />
+
+# Bridge Examples - Cross-Tab Communication
+
+These examples demonstrate Bridge's cross-tab broadcasting and direct messaging capabilities.
+
+## Available Examples
+
+- **`examples/counter-sync/`** - Basic counter with cross-tab broadcasting
+- **`examples/multi-channel/`** - Multi-channel isolation demo
+- **`examples/tab-messaging/`** - Direct messaging and broadcast relay
+
+## What It Does
+
+- Maintains a counter that's synchronized across all browser tabs
+- When you increment/decrement in one tab, all other tabs update automatically
+- Shows activity log with local vs broadcast events
+- Demonstrates the "no echo" feature (sender doesn't receive own broadcasts)
+
+## Try It Out
+
+1. Build the library:
+   ```bash
+   npm run build
+   ```
+
+2. Serve the example (from project root):
+   ```bash
+   npx serve .
+   ```
+
+3. Open `http://localhost:3000/docs/examples/Bridge/index.html` in multiple tabs
+
+4. Click the buttons in any tab and watch the counter update in all tabs!
+
+## Key Features Demonstrated
+
+### Single Schema Definition
+```javascript
+const schema = {
+  increment: () => {
+    counter++;
+    return counter;
+  },
+  // ... more methods
+};
+```
+
+### Broadcast Execution
+```javascript
+// Calling remote method executes locally AND broadcasts
+const result = await connection.remote.increment();
+```
+
+### How It Works
+
+Schema functions execute automatically in ALL tabs when any tab calls them:
+
+```javascript
+// Your schema functions ARE the handlers - no .on() needed!
+const schema = {
+  increment: () => {
+    counter++;
+    updateUI(counter); // This runs in ALL tabs automatically
+    return counter;
+  }
+};
+```
+
+### No Echo
+Notice that when you click a button, you see:
+- **Local** log entry (your action)
+- **Broadcast** log entries in OTHER tabs only
+
+This is the "no echo" feature - you don't receive your own broadcasts.
+
+## Browser Support
+
+This example requires SharedWorker support:
+-  Chrome/Edge
+-  Firefox
+-  Safari (not supported)
+
+## Code Structure
+
+```
+index.html
+├── Schema definition (increment, decrement, reset)
+├── Bridge connection
+├── Event listeners setup
+└── UI updates
+```
+
+## New Features
+
+### Direct Messaging
+Send messages to specific tabs instead of broadcasting to all:
+```javascript
+const tabs = await connection.getConnectedTabs();
+await connection.remote(targetTabID).increment();
+```
+
+### Custom Tab IDs
+Use your own identifiers for tabs:
+```javascript
+const connection = await bridge.connect(schema, {
+  tabID: 'my-custom-id',
+  channel: 'my-app'
+});
+```
+
+### Tab Discovery
+Get list of all connected tabs:
+```javascript
+const tabIDs = await connection.getConnectedTabs();
+console.log(`${tabIDs.length} tabs connected`);
+```
+
+## Learn More
+
+- [Bridge Guide](?path=/docs/guides-bridge--docs) - Complete documentation
+- [Channel Isolation Guide](?path=/docs/guides-channel-isolation--docs) - Multi-channel patterns
+- [Multi-Writer Troubleshooting](?path=/docs/guides-troubleshooting-multi-writer--docs) - Common issues
+

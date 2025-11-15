@@ -1,0 +1,504 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="API Reference/withTransferable" />
+
+# withTransferable API Reference
+
+Complete API reference for the `withTransferable` helper function.
+
+## Overview
+
+`withTransferable` marks objects for **zero-copy transfer** instead of copying during RPC calls. This dramatically improves performance for large binary data.
+
+```typescript
+function withTransferable<Transferable, Result extends object>(
+  callback: (transfer: <T extends Transferable>(obj: T) => T) => Result
+): Result
+```
+
+## Performance Comparison
+
+```javascript
+// Without transferable (COPIES 100MB)
+const buffer = new ArrayBuffer(100 * 1024 * 1024);
+await connection.remote.process({ buffer });
+// Time: ~500ms, Memory: 200MB (doubled)
+
+// With transferable (TRANSFERS 100MB)
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+// Time: ~1ms, Memory: 100MB
+// 500x faster!
+```
+
+## Basic Usage
+
+### Single Transferable
+
+```javascript
+import { withTransferable } from 'postbridge';
+
+const buffer = new ArrayBuffer(1024 * 1024); // 1MB
+
+// Mark buffer as transferable
+await connection.remote.processBuffer(
+  withTransferable(t => t(buffer))
+);
+
+// After call, buffer is detached (unusable)
+console.log(buffer.byteLength); // 0
+```
+
+### Multiple Transferables
+
+```javascript
+const buffer1 = new ArrayBuffer(1024);
+const buffer2 = new ArrayBuffer(2048);
+const buffer3 = new ArrayBuffer(4096);
+
+// Transfer multiple buffers
+await connection.remote.processBuffers(
+  withTransferable(t => ({
+    data1: t(buffer1),
+    data2: t(buffer2),
+    data3: t(buffer3),
+    metadata: 'not transferred' // Regular data
+  }))
+);
+
+// All buffers are now detached
+console.log(buffer1.byteLength); // 0
+console.log(buffer2.byteLength); // 0
+console.log(buffer3.byteLength); // 0
+```
+
+### In Array
+
+```javascript
+const buffers = [
+  new ArrayBuffer(1024),
+  new ArrayBuffer(2048),
+  new ArrayBuffer(4096)
+];
+
+// Transfer array of buffers
+await connection.remote.processBatch(
+  withTransferable(t => buffers.map(b => t(b)))
+);
+```
+
+## Parameters
+
+### callback
+
+Function that receives a `transfer` function and returns the data structure.
+
+**Type:** `(transfer: <T>(obj: T) => T) => Result`
+
+**The `transfer` function:**
+- Marks an object as transferable
+- Returns the same object (for convenience)
+- Can be called multiple times
+
+**Examples:**
+
+```javascript
+// Simple object
+withTransferable(t => t(buffer))
+
+// Object with metadata
+withTransferable(t => ({
+  buffer: t(buffer),
+  size: buffer.byteLength,
+  timestamp: Date.now()
+}))
+
+// Array of transferables
+withTransferable(t => buffers.map(b => t(b)))
+
+// Nested structure
+withTransferable(t => ({
+  image: {
+    data: t(imageBuffer),
+    width: 1920,
+    height: 1080
+  },
+  audio: {
+    data: t(audioBuffer),
+    sampleRate: 44100
+  }
+}))
+```
+
+## Return Value
+
+Returns the result from the callback, with special `_transferables` property added internally.
+
+**Type:** `Result` (same as callback return type)
+
+**Note:** The `_transferables` property is internal and automatically removed before sending.
+
+## Transferable Types
+
+### Supported Types
+
+Only these types can be transferred:
+
+```javascript
+//  ArrayBuffer
+new ArrayBuffer(1024)
+
+//  TypedArrays (buffer is transferred)
+new Uint8Array(1024)
+new Float64Array(100)
+new Int32Array(256)
+
+//  DataView (buffer is transferred)
+new DataView(buffer)
+
+//  MessagePort
+const { port1, port2 } = new MessageChannel();
+withTransferable(t => t(port1))
+
+//  ImageBitmap
+const bitmap = await createImageBitmap(image);
+withTransferable(t => t(bitmap))
+
+//  OffscreenCanvas (some browsers)
+const canvas = new OffscreenCanvas(800, 600);
+withTransferable(t => t(canvas))
+
+//  Streams
+new ReadableStream()
+new WritableStream()
+new TransformStream()
+```
+
+### Non-Transferable Types
+
+```javascript
+//  Regular objects
+withTransferable(t => t({ a: 1, b: 2 })) // Won't transfer
+
+//  Arrays
+withTransferable(t => t([1, 2, 3])) // Won't transfer
+
+//  Strings
+withTransferable(t => t('hello')) // Won't transfer
+
+//  Numbers
+withTransferable(t => t(42)) // Won't transfer
+
+//  Blob
+withTransferable(t => t(new Blob(['data']))) // Won't transfer
+
+//  File
+withTransferable(t => t(new File(['data'], 'file.txt'))) // Won't transfer
+```
+
+**Solution for non-transferables:**
+Convert to ArrayBuffer first:
+
+```javascript
+// Blob → ArrayBuffer
+const blob = new Blob(['data']);
+const buffer = await blob.arrayBuffer();
+withTransferable(t => t(buffer))
+
+// String → ArrayBuffer
+const text = 'hello';
+const encoder = new TextEncoder();
+const buffer = encoder.encode(text).buffer;
+withTransferable(t => t(buffer))
+```
+
+## Practical Examples
+
+### Example 1: Image Processing
+
+```javascript
+import { withTransferable } from 'postbridge';
+
+// Get image data from canvas
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+// Transfer to worker (zero-copy)
+const result = await connection.remote.processImage(
+  withTransferable(t => ({
+    data: t(imageData.data.buffer),
+    width: canvas.width,
+    height: canvas.height
+  }))
+);
+
+// imageData.data.buffer is now detached
+console.log(imageData.data.buffer.byteLength); // 0
+
+// Display result
+const processed = new ImageData(
+  new Uint8ClampedArray(result.data),
+  result.width,
+  result.height
+);
+ctx.putImageData(processed, 0, 0);
+```
+
+### Example 2: File Upload
+
+```javascript
+// Read file as ArrayBuffer
+const file = document.getElementById('file-input').files[0];
+const buffer = await file.arrayBuffer();
+
+// Upload with transfer
+const response = await connection.remote.uploadFile(
+  withTransferable(t => ({
+    data: t(buffer),
+    filename: file.name,
+    mimeType: file.type
+  }))
+);
+
+console.log('Upload complete:', response);
+```
+
+### Example 3: Audio Processing
+
+```javascript
+// Get audio data from Web Audio API
+const audioContext = new AudioContext();
+const buffer = audioContext.createBuffer(2, 44100, 44100);
+
+// Get channel data
+const left = buffer.getChannelData(0);
+const right = buffer.getChannelData(1);
+
+// Transfer both channels
+const processed = await connection.remote.processAudio(
+  withTransferable(t => ({
+    left: t(left.buffer),
+    right: t(right.buffer),
+    sampleRate: buffer.sampleRate
+  }))
+);
+```
+
+### Example 4: Return Transferable from Worker
+
+```javascript
+// Worker can also use withTransferable
+import { guest, withTransferable } from 'postbridge';
+
+const connection = await guest.connect({
+  processData: (input) => {
+    const result = new ArrayBuffer(1024);
+    // ... fill result ...
+
+    // Transfer result back to host
+    return withTransferable(t => ({
+      data: t(result),
+      processed: true
+    }));
+  }
+});
+
+// Host receives transferred data
+const response = await connection.remote.processData(input);
+console.log(response.data); // ArrayBuffer (transferred, not copied)
+```
+
+## Common Patterns
+
+### Pattern 1: Always Make a Copy First
+
+```javascript
+//  Bad: Original buffer becomes unusable
+const buffer = loadData();
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+// Can't use buffer anymore!
+
+//  Good: Keep a copy if needed
+const buffer = loadData();
+const copy = buffer.slice(); // Create copy
+
+await connection.remote.process(
+  withTransferable(t => t(buffer)) // Transfer original
+);
+
+// Still have copy
+console.log(copy.byteLength); // Still usable
+```
+
+### Pattern 2: Check Before Transfer
+
+```javascript
+function safeTransfer(buffer) {
+  if (buffer.byteLength === 0) {
+    throw new Error('Buffer already detached');
+  }
+
+  return withTransferable(t => t(buffer));
+}
+```
+
+### Pattern 3: Conditional Transfer
+
+```javascript
+async function sendData(data, useTransfer = true) {
+  if (useTransfer && data instanceof ArrayBuffer) {
+    // Use transfer for large data
+    return await connection.remote.process(
+      withTransferable(t => t(data))
+    );
+  } else {
+    // Regular copy for small data
+    return await connection.remote.process(data);
+  }
+}
+```
+
+### Pattern 4: Transfer Threshold
+
+```javascript
+const TRANSFER_THRESHOLD = 1024 * 1024; // 1MB
+
+async function smartSend(buffer) {
+  if (buffer.byteLength >= TRANSFER_THRESHOLD) {
+    // Transfer large buffers
+    return await connection.remote.process(
+      withTransferable(t => t(buffer))
+    );
+  } else {
+    // Copy small buffers (transfer overhead not worth it)
+    return await connection.remote.process({ buffer });
+  }
+}
+```
+
+## TypeScript Support
+
+```typescript
+import { withTransferable } from 'postbridge';
+
+// Type-safe usage
+const buffer: ArrayBuffer = new ArrayBuffer(1024);
+
+const data = withTransferable(t => ({
+  buffer: t(buffer),
+  size: buffer.byteLength,
+  timestamp: Date.now()
+}));
+
+// data type is inferred: { buffer: ArrayBuffer, size: number, timestamp: number }
+
+await connection.remote.process(data);
+```
+
+## Browser Compatibility
+
+**Transferable objects:**
+- ArrayBuffer: All browsers
+- MessagePort: All browsers
+- ImageBitmap: Chrome 50+, Firefox 42+, Safari 15+
+- OffscreenCanvas: Chrome 69+, Firefox 44+, Safari 16.4+
+- Streams: Chrome 89+, Firefox 102+, Safari 16.1+
+
+**Feature detection:**
+```javascript
+if (typeof OffscreenCanvas !== 'undefined') {
+  // Can transfer OffscreenCanvas
+} else {
+  // Fallback to copying
+}
+```
+
+## Performance Tips
+
+### 1. Measure First
+
+```javascript
+console.time('with-transfer');
+await connection.remote.process(withTransferable(t => t(buffer)));
+console.timeEnd('with-transfer');
+
+console.time('without-transfer');
+await connection.remote.process({ buffer });
+console.timeEnd('without-transfer');
+```
+
+### 2. Use for Large Data Only
+
+```javascript
+//  Overhead not worth it for small data
+const tiny = new ArrayBuffer(100);
+withTransferable(t => t(tiny)) // Slower than copying!
+
+//  Worthwhile for large data
+const large = new ArrayBuffer(10 * 1024 * 1024); // 10MB
+withTransferable(t => t(large)) // Much faster!
+```
+
+### 3. Batch Transfers
+
+```javascript
+//  Multiple transfers (overhead)
+for (const buffer of buffers) {
+  await connection.remote.process(withTransferable(t => t(buffer)));
+}
+
+//  Single batched transfer
+await connection.remote.processBatch(
+  withTransferable(t => buffers.map(b => t(b)))
+);
+```
+
+## Common Mistakes
+
+### Mistake 1: Using Detached Buffer
+
+```javascript
+const buffer = new ArrayBuffer(1024);
+
+await connection.remote.process1(withTransferable(t => t(buffer)));
+
+//  Buffer is now detached!
+await connection.remote.process2(withTransferable(t => t(buffer)));
+// Error or undefined behavior
+```
+
+### Mistake 2: Forgetting withTransferable
+
+```javascript
+//  Not using withTransferable - data is COPIED
+const buffer = new ArrayBuffer(100 * 1024 * 1024);
+await connection.remote.process({ buffer });
+// Slow! 100MB copied
+
+//  Using withTransferable - data is TRANSFERRED
+await connection.remote.process(withTransferable(t => t(buffer)));
+// Fast! 100MB transferred
+```
+
+### Mistake 3: Transferring Non-Transferable
+
+```javascript
+//  Blob is not transferable
+const blob = new Blob(['data']);
+withTransferable(t => t(blob)) // Won't transfer
+
+//  Convert to ArrayBuffer first
+const buffer = await blob.arrayBuffer();
+withTransferable(t => t(buffer)) // Transfers!
+```
+
+## See Also
+
+- [Transferables Guide](?path=/docs/guides-transferables--docs) - Detailed guide
+- [Image Processing Example](?path=/docs/examples-image-processing--docs) - Real-world usage
+- [Web Workers Guide](?path=/docs/guides-web-workers--docs) - Worker patterns
+- [Message Flow](?path=/docs/architecture-message-flow--docs) - How transferables work

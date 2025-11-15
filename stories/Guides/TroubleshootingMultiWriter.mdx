@@ -1,0 +1,284 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Troubleshooting Multi-Writer" />
+
+# Troubleshooting: "My Counter Increments Multiple Times!"
+
+**Playbook for fixing multi-writer race conditions in Bridge**
+
+##  Symptom: Values Changing Too Much
+
+You implemented a counter with increment/decrement buttons. When you click once, the counter jumps by 2, 3, or more depending on how many tabs are open.
+
+```typescript
+// Your code looks like this:
+const schema = {
+  counter: 0,
+
+  increment: (remote) => {
+    remote.counter++; // Looks innocent enough...
+    updateUI(remote.counter);
+  },
+};
+
+// Problem: Each tab executes the increment!
+// - Tab A: counter goes 0 → 1 
+// - Tab B receives broadcast: counter goes 1 → 2 
+// - Tab C receives broadcast: counter goes 2 → 3 
+```
+
+**Root Cause:** Bridge broadcasts function execution to ALL tabs. Each tab runs the same function, causing multiple mutations.
+
+---
+
+##  Solution: "Single Source of Truth" Pattern
+
+**Key Insight:** Don't mutate in the function. Pass the new value explicitly.
+
+### Step 1: Change Your Schema Function
+
+**Before ():**
+
+```typescript
+const schema = {
+  counter: 0,
+
+  increment: (remote) => {
+    remote.counter++; // Mutates in place
+    return remote.counter;
+  },
+};
+```
+
+**After ():**
+
+```typescript
+const schema = {
+  counter: 0,
+
+  // Take the new value as a parameter
+  setCounter: (newValue, remote) => {
+    remote.counter = newValue; // Explicit value, not mutation
+    updateUI(newValue);
+    return newValue;
+  },
+};
+```
+
+### Step 2: Compute Value in the Caller
+
+**Before ():**
+
+```typescript
+incrementBtn.onclick = () => {
+  connection.remote.increment(); // Doesn't know what value to set
+};
+```
+
+**After ():**
+
+```typescript
+incrementBtn.onclick = () => {
+  // Read current value
+  const currentValue = connection.remote.counter;
+
+  // Compute new value
+  const newValue = currentValue + 1;
+
+  // Set it explicitly
+  connection.remote.setCounter(newValue);
+};
+
+// Or more concisely:
+incrementBtn.onclick = () => {
+  connection.remote.setCounter(connection.remote.counter + 1);
+};
+```
+
+### Step 3: All Tabs Sync Automatically
+
+```typescript
+// When any tab clicks increment:
+// - Caller: Reads counter=5, computes newValue=6, broadcasts setCounter(6)
+// - Tab B: Receives broadcast, executes setCounter(6), counter becomes 6 
+// - Tab C: Receives broadcast, executes setCounter(6), counter becomes 6 
+// - All tabs now have counter=6!
+```
+
+**Why this works:** Every tab sets to the SAME value (6), not incrementing from their own state.
+
+---
+
+##  Quick Reference: Mutation Patterns
+
+|  Anti-Pattern (Mutations) |  Fixed (Explicit Values)                                             |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `remote.count++`            | `remote.count = newValue`                                              |
+| `remote.count--`            | `remote.count = newValue`                                              |
+| `remote.items.push(item)`   | `remote.items = [...remote.items, item]`                               |
+| `remote.user.name = 'Bob'`  | `remote.user = { ...remote.user, name: 'Bob' }`                        |
+| `remote.scores[i]++`        | `remote.scores = remote.scores.map((s, idx) => idx === i ? s + 1 : s)` |
+
+**Rule of Thumb:** If it looks like `+=`, `-=`, `++`, `--`, `.push()`, `.splice()`, etc., you need to refactor.
+
+---
+
+##  Complete Example: Counter App
+
+```typescript
+import { bridge } from "postbridge";
+
+//  Schema with explicit value pattern
+const schema = {
+  // Shared variable: New tabs catch up on current value
+  counter: 0,
+
+  // Function takes explicit value (caller computes it)
+  setCounter: (newValue, remote) => {
+    remote.counter = newValue;
+    document.getElementById("counter").textContent = newValue;
+    return newValue;
+  },
+};
+
+// Connect
+const connection = await bridge.connect(schema);
+
+// Initialize UI with current state (important for new tabs!)
+document.getElementById("counter").textContent = connection.remote.counter;
+
+// Wire up buttons
+document.getElementById("increment").onclick = () => {
+  const newValue = connection.remote.counter + 1;
+  connection.remote.setCounter(newValue);
+};
+
+document.getElementById("decrement").onclick = () => {
+  const newValue = connection.remote.counter - 1;
+  connection.remote.setCounter(newValue);
+};
+
+document.getElementById("reset").onclick = () => {
+  connection.remote.setCounter(0);
+};
+```
+
+---
+
+##  Testing Your Fix
+
+1. **Build and serve:**
+
+   ```bash
+   npm run build
+   npx serve .
+   ```
+
+2. **Open 3+ tabs** to the same URL
+
+3. **Click increment in Tab 1:**
+
+   - Counter should go from 0 → 1 in ALL tabs
+   - Should NOT jump to 2 or 3
+
+4. **Click increment in Tab 2:**
+
+   - Counter should go from 1 → 2 in ALL tabs
+
+5. **Rapidly click in different tabs:**
+   - Each click should increment by exactly 1
+   - No matter how many tabs are open
+
+ **If each click = +1 (not +N where N = tab count), you've fixed it!**
+
+---
+
+##  "But What If I WANT Mutations?"
+
+### Option 1: Use Local State Instead
+
+If each tab should have independent state:
+
+```typescript
+// No shared variables!
+const schema = {
+  notifyCounterChanged: (newValue, remote) => {
+    console.log(`Another tab's counter: ${newValue}`);
+    // Don't update our counter - just log theirs
+  },
+};
+
+// Each tab tracks its own counter
+let myCounter = 0;
+
+incrementBtn.onclick = () => {
+  myCounter++;
+  updateUI(myCounter);
+  connection.remote.notifyCounterChanged(myCounter);
+};
+```
+
+### Option 2: Use a Server as Source of Truth
+
+If you need a true shared accumulator:
+
+```typescript
+const schema = {
+  counter: 0,
+
+  incrementOnServer: async (remote) => {
+    // Send increment to server, get back new total
+    const response = await fetch("/api/counter/increment", { method: "POST" });
+    const { newValue } = await response.json();
+
+    // Set all tabs to server's value
+    remote.counter = newValue;
+    return newValue;
+  },
+};
+```
+
+### Option 3: Designated "Leader" Tab
+
+Advanced: One tab owns mutations, others are read-only:
+
+```typescript
+const isLeader = sessionStorage.getItem("leader") === "true";
+
+const schema = {
+  counter: 0,
+  setCounter: (newValue, remote) => {
+    remote.counter = newValue;
+  },
+};
+
+if (isLeader) {
+  incrementBtn.onclick = () => {
+    connection.remote.setCounter(connection.remote.counter + 1);
+  };
+} else {
+  incrementBtn.disabled = true;
+  incrementBtn.title = "Only leader tab can increment";
+}
+```
+
+---
+
+## Further Reading
+
+- **[Understanding Shared State in Bridge](?path=/docs/guides-understanding-shared-state--docs)** - Comprehensive long-form guide with deep context
+- **[Shared State Patterns Guide](?path=/docs/guides-shared-state-patterns--docs)** - Quick reference for patterns
+- **[Bridge Documentation](?path=/docs/guides-bridge--docs)** - Full API reference
+- **[Example: Counter App](?path=/docs/introduction--docs)** - Working code you can run
+
+---
+
+##  Key Takeaways
+
+1. **Shared functions execute in ALL tabs** (not just the caller)
+2. **Mutations (`++`, `.push()`, etc.) cause double/triple/N-tuple changes**
+3. **Fix: Use explicit values** (`setCounter(newValue)` not `counter++`)
+4. **Caller computes, all tabs receive** the same value
+5. **Shared variables are perfect for** catching up new tabs to current state
+
+**Remember:** This isn't a bug - it's distributed systems! Bridge gives you the primitives; you choose the pattern. 

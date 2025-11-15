@@ -1,0 +1,418 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Multiple Connections" />
+
+# Multiple Connections and Namespaces in Bridge
+
+## Current Behavior
+
+### The SharedWorker Singleton
+
+Bridge uses a SharedWorker identified by its URL. By browser spec, all `new SharedWorker(url)` calls with the same URL connect to the **same SharedWorker instance**. This has important implications:
+
+```typescript
+// All of these connect to the SAME SharedWorker:
+const conn1 = await bridge.connect(schema1);
+const conn2 = await bridge.connect(schema2); // Same worker!
+const conn3 = await bridge.connect(schema1); // Same worker!
+```
+
+The worker maintains:
+
+- A single `connectedTabs` map (all connections)
+- A single `sharedState` object (shared by all)
+- A single relay mechanism (broadcasts to all tabs)
+
+### Scenario 1: Different Schemas in Same Tab
+
+```typescript
+const counterSchema = {
+  counter: 0,
+  setCounter: (value, remote) => (remote.counter = value),
+};
+
+const todoSchema = {
+  todos: [],
+  setTodos: (items, remote) => (remote.todos = items),
+};
+
+// What happens?
+const conn1 = await bridge.connect(counterSchema);
+const conn2 = await bridge.connect(todoSchema);
+
+// Problem: Both share the same worker state
+console.log(conn1.remote.counter); // Works
+console.log(conn1.remote.todos); // Also accessible! Unintended mixing
+
+console.log(conn2.remote.counter); // Also accessible! Unintended mixing
+console.log(conn2.remote.todos); // Works
+```
+
+**What happens:**
+
+1. `conn1` connects first, initializes `sharedState` with `{ counter: 0 }`
+2. `conn2` connects second, adds its schema but sees existing state
+3. Both connections share the same state space
+4. Methods from both schemas are available on both connections (unintended)
+
+**Result**: The two "separate" connections are actually using the same shared state. This is likely **not what you want**.
+
+### Scenario 2: Same Schema Multiple Times
+
+```typescript
+const schema = {
+  counter: 0,
+  increment: (remote) => remote.counter++,
+};
+
+// What happens?
+const conn1 = await bridge.connect(schema);
+const conn2 = await bridge.connect(schema); // Same tab, same schema
+
+// Now call increment from conn1
+await conn1.remote.increment();
+```
+
+**What happens:**
+
+1. The same browser tab now has **two tabIDs** in the worker's registry
+2. When `conn1` broadcasts `increment`, the worker relays to all OTHER tabs
+3. But "other tabs" includes `conn2` (different tabID, same browser tab!)
+4. So `conn2` executes increment, even though it's in the same tab
+
+**Result**: The same tab receives its own broadcasts (via the second connection). You'd get double execution within the same physical tab.
+
+### Scenario 3: Different Schemas in Different Tabs
+
+```typescript
+// Tab A
+const conn = await bridge.connect({
+  counter: 0,
+  setCounter: (v, remote) => (remote.counter = v),
+});
+
+// Tab B (different browser tab)
+const conn = await bridge.connect({
+  todos: [],
+  setTodos: (items, remote) => (remote.todos = items),
+});
+```
+
+**What happens:**
+
+1. Tab A connects first, initializes state with `{ counter: 0 }`
+2. Tab B connects, sees `{ counter: 0 }` and tries to add `todos`
+3. Both tabs now share: `{ counter: 0, todos: [] }`
+4. Tab A can call methods that Tab B defined (but doesn't have implementations for)
+5. Tab B can call methods that Tab A defined (but doesn't have implementations for)
+
+**Result**: Schemas from different tabs get mixed together in the shared state. This creates inconsistencies.
+
+## Recommendation: Use Channels for Isolation
+
+**For isolated applications, use different channels:**
+
+```typescript
+// App 1: Counter
+const counterConn = await bridge.connect(
+  { counter: 0, increment: (remote) => remote.counter++ },
+  { channel: "counter-app" },
+);
+
+// App 2: Todos (completely isolated)
+const todoConn = await bridge.connect(
+  { todos: [], addTodo: (todo, remote) => [...remote.todos, todo] },
+  { channel: "todo-app" },
+);
+```
+
+**Live Demo**: See the `examples/multi-channel/` directory in the repository for a working demonstration of channel isolation with two independent counter applications running simultaneously.
+
+**For a single application, use a consistent schema:**
+
+```typescript
+// Define once, use everywhere
+const appSchema = {
+  // All state
+  counter: 0,
+  todos: [],
+  user: null,
+
+  // All methods
+  setCounter: (value, remote) => (remote.counter = value),
+  setTodos: (items, remote) => (remote.todos = items),
+  setUser: (user, remote) => (remote.user = user),
+};
+
+// Every tab uses the same schema
+const conn = await bridge.connect(appSchema);
+```
+
+**Why this works:**
+
+- All tabs have the same methods
+- All tabs understand the same state structure
+- Broadcasts are meaningful to all tabs
+- No schema mismatches
+
+## Workaround: Manual Namespacing
+
+If you need isolated state spaces, implement namespacing within your schema:
+
+```typescript
+const schema = {
+  // Namespace state in the shared object
+  counter: { app1: 0, app2: 0 },
+  todos: { app1: [], app2: [] },
+
+  // Namespace methods with prefixes or parameters
+  setCounterApp1: (value, remote) => {
+    remote.counter.app1 = value;
+    if (currentApp === "app1") updateUI(value);
+  },
+
+  setCounterApp2: (value, remote) => {
+    remote.counter.app2 = value;
+    if (currentApp === "app2") updateUI(value);
+  },
+
+  // Or use a parameter-based approach
+  setCounter: (namespace, value, remote) => {
+    remote.counter[namespace] = value;
+    if (currentApp === namespace) updateUI(value);
+  },
+};
+
+// Usage
+const conn = await bridge.connect(schema);
+conn.remote.setCounter("app1", 42);
+```
+
+**Tradeoffs:**
+
+- More verbose
+- Requires coordination between tabs about which namespace to use
+- Still shares the same SharedWorker
+- Better than accidentally mixed state
+
+## Future: Channel-Based Connections
+
+A future enhancement could add explicit channels or namespaces:
+
+```typescript
+// Hypothetical future API
+const conn1 = await bridge.connect(schema1, {
+  channel: "counter-app",
+});
+
+const conn2 = await bridge.connect(schema2, {
+  channel: "todo-app",
+});
+
+// These would use isolated state spaces within the same worker
+// Or potentially different workers with different URLs
+```
+
+**Implementation approaches:**
+
+1. **Multi-namespace worker**: Modify the worker to maintain separate state per channel
+
+   ```typescript
+   // Worker would maintain:
+   const channels = new Map();
+   channels.set("counter-app", {
+     connectedTabs: new Map(),
+     sharedState: { counter: 0 },
+   });
+   channels.set("todo-app", {
+     connectedTabs: new Map(),
+     sharedState: { todos: [] },
+   });
+   ```
+
+2. **Different worker URLs**: Generate unique worker URLs per channel
+   ```typescript
+   const workerURL = `/bridge-worker.js?channel=${channel}`;
+   // Different URLs = different SharedWorker instances
+   ```
+
+## Best Practices
+
+### Do: Single Global Schema
+
+```typescript
+// shared-schema.ts
+export const globalSchema = {
+  user: null,
+  notifications: [],
+  activeTab: null,
+
+  setUser: (user, remote) => (remote.user = user),
+  addNotification: (notif, remote) => {
+    remote.notifications = [...remote.notifications, notif];
+  },
+  setActiveTab: (tabId, remote) => (remote.activeTab = tabId),
+};
+
+// Every component/tab uses this
+import { globalSchema } from "./shared-schema";
+const conn = await bridge.connect(globalSchema);
+```
+
+### Don't: Multiple Independent Schemas
+
+```typescript
+// Component A
+const connA = await bridge.connect({
+  counterA: 0,
+  incrementA: (remote) => remote.counterA++,
+});
+
+// Component B (same app)
+const connB = await bridge.connect({
+  counterB: 0,
+  incrementB: (remote) => remote.counterB++,
+});
+
+// These will interfere with each other!
+```
+
+### Do: Compose Schemas
+
+```typescript
+// Build schema from modules
+const counterSchema = {
+  counter: 0,
+  setCounter: (v, remote) => (remote.counter = v),
+};
+
+const todoSchema = {
+  todos: [],
+  setTodos: (items, remote) => (remote.todos = items),
+};
+
+// Combine into one
+const appSchema = {
+  ...counterSchema,
+  ...todoSchema,
+};
+
+// Use the combined schema everywhere
+const conn = await bridge.connect(appSchema);
+```
+
+### Do: Selective Execution
+
+If different tabs need different behavior for the same broadcast:
+
+```typescript
+const schema = {
+  theme: "light",
+
+  setTheme: (newTheme, remote) => {
+    remote.theme = newTheme;
+
+    // Each tab decides whether to apply
+    if (shouldApplyTheme()) {
+      applyTheme(newTheme);
+    }
+  },
+};
+
+// Tab A might apply, Tab B might ignore
+function shouldApplyTheme() {
+  return document.getElementById("theme-sensitive") !== null;
+}
+```
+
+## Detection and Debugging
+
+### Detecting Multiple Connections
+
+```typescript
+let connectionCount = 0;
+
+const originalConnect = bridge.connect;
+bridge.connect = async (...args) => {
+  connectionCount++;
+  if (connectionCount > 1) {
+    console.warn(
+      `Multiple Bridge connections detected (${connectionCount}). ` +
+        `This may cause unexpected behavior. ` +
+        `See: docs/guides/multiple-connections.md`,
+    );
+  }
+  return originalConnect(...args);
+};
+```
+
+### Inspecting Shared State
+
+```typescript
+const conn = await bridge.connect(schema);
+
+// After connection, you can inspect what's in shared state
+console.log("Shared state keys:", Object.keys(conn.remote));
+
+// Check if unexpected keys exist
+const expectedKeys = Object.keys(schema).filter((k) => typeof schema[k] !== "function");
+const actualKeys = Object.keys(conn.remote).filter((k) => typeof conn.remote[k] !== "function");
+const unexpected = actualKeys.filter((k) => !expectedKeys.includes(k));
+
+if (unexpected.length > 0) {
+  console.warn("Unexpected shared state keys:", unexpected);
+  console.warn("Another schema may have been used in a different tab");
+}
+```
+
+## Summary
+
+**Current state (v0.7.0+):**
+
+- Bridge uses channels for state isolation
+- Each channel has its own isolated state space
+- Broadcasts only reach tabs on the same channel
+- Default channel: `"default"` for backward compatibility
+
+**Best practices:**
+
+1. **Multiple independent apps**: Use different channels
+
+   ```typescript
+   const app1 = await bridge.connect(schema1, { channel: "app1" });
+   const app2 = await bridge.connect(schema2, { channel: "app2" });
+   ```
+
+2. **Single app**: Use one consistent schema (no channel needed)
+
+   ```typescript
+   const conn = await bridge.connect(globalSchema);
+   ```
+
+3. **Namespace within app**: Compose smaller schemas
+   ```typescript
+   const appSchema = { ...counterSchema, ...todoSchema };
+   const conn = await bridge.connect(appSchema);
+   ```
+
+**Backward compatibility:**
+
+- No breaking changes
+- Existing code works without modification
+- Omitting `channel` option defaults to `"default"`
+
+**When to use channels:**
+
+- Running multiple independent Bridge apps in the same domain
+- Testing multiple instances without interference
+- Building multi-tenant applications with isolated state per tenant
+
+**Try it yourself:**
+
+```bash
+npm run build
+npx serve .
+# Open http://localhost:3000/examples/multi-channel/
+# Open multiple tabs and interact with both Channel A and Channel B
+# Observe how they maintain completely independent state
+```

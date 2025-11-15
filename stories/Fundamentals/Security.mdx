@@ -1,0 +1,577 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Fundamentals/Security" />
+
+# Security Model
+
+Security is critical when communicating across JavaScript contexts, especially with iframes. This document explains postbridge's security model and best practices.
+
+## Why Security Matters
+
+### The Threat Model
+
+When your page communicates with other contexts, you face several risks:
+
+```
+Your Page (https://mysite.com)
+       │
+       ├─→ Trusted Worker (your code)
+       │    Safe - runs your code
+       │
+       └─→ Third-party iframe (https://untrusted.com)
+           ️  Risky - runs their code
+           - Could send malicious messages
+           - Could pretend to be another iframe
+           - Could try to steal data
+```
+
+**What can go wrong:**
+
+1. **Message Spoofing** - Malicious iframe pretends to be trusted iframe
+2. **Data Theft** - Attacker intercepts sensitive data
+3. **XSS Attacks** - Malicious messages execute code
+4. **Origin Confusion** - Wrong iframe receives sensitive data
+
+## postbridge Security Features
+
+### 1. Origin Validation (iframes)
+
+postbridge **automatically validates** iframe origins to prevent spoofing.
+
+**How it works:**
+
+```javascript
+// Host connects to iframe
+const iframe = document.getElementById('trusted-iframe');
+const connection = await host.connect(iframe, schema);
+```
+
+**Behind the scenes:**
+```javascript
+function isValidTarget(guest, event) {
+  const iframe = guest;
+  const expectedOrigin = getOriginFromURL(iframe.src);
+
+  // Check 1: Does message origin match iframe's src?
+  if (event.origin !== expectedOrigin) {
+    return false; // Reject!
+  }
+
+  // Check 2: Does event.source match iframe.contentWindow?
+  if (event.source !== iframe.contentWindow) {
+    return false; // Reject!
+  }
+
+  return true; // Accept
+}
+```
+
+**Attack prevented:**
+
+```
+Your Page (https://mysite.com)
+    │
+    ├─→ Trusted iframe (https://trusted.com)
+    │   - iframe.src = 'https://trusted.com'
+    │   - Expected origin: 'https://trusted.com'
+    │
+    └─→ Malicious iframe (https://evil.com)
+        - Tries to send message
+        - event.origin = 'https://evil.com'
+        -  Rejected! (origin mismatch)
+```
+
+### 2. Worker Isolation
+
+Workers don't need origin validation because they're **inherently secure**:
+
+**Why workers are safe:**
+- Created from your own code
+- Can't be created by other origins
+- Browser enforces isolation
+- No way to spoof messages
+
+```javascript
+//  Workers are trusted by default
+const worker = new Worker('worker.js');
+const connection = await host.connect(worker, schema);
+// No origin validation needed!
+```
+
+### 3. Connection ID Isolation
+
+Each connection gets a **unique ID** to prevent message routing confusion:
+
+```javascript
+// Multiple connections, each isolated
+const worker1 = new Worker('worker1.js');
+const worker2 = new Worker('worker2.js');
+
+const conn1 = await host.connect(worker1, schema); // ID: "abc123"
+const conn2 = await host.connect(worker2, schema); // ID: "def456"
+
+// Messages to worker1 use "abc123" - worker2 ignores them
+// Messages to worker2 use "def456" - worker1 ignores them
+```
+
+**Attack prevented:**
+- Worker1 can't intercept Worker2's messages
+- Each connection is cryptographically isolated
+
+### 4. Type Safety
+
+TypeScript prevents many security issues at compile time:
+
+```typescript
+interface TrustedAPI {
+  getData: () => Promise<Data>;
+  saveData: (data: Data) => Promise<void>;
+}
+
+const connection = await host.connect<{}, TrustedAPI>(iframe, {});
+
+//  Type-safe - known method
+await connection.remote.getData();
+
+//  Type error - unknown method
+await connection.remote.deleteAllData();
+```
+
+## Security Best Practices
+
+### 1. Always Validate Input
+
+Even with origin validation, **never trust incoming data**:
+
+```javascript
+//  BAD: Trusts data blindly
+const connection = await host.connect(iframe, {
+  executeCode: (code) => {
+    eval(code); // DANGEROUS!
+  },
+
+  updateDOM: (html) => {
+    document.body.innerHTML = html; // XSS RISK!
+  }
+});
+
+//  GOOD: Validates and sanitizes
+const connection = await host.connect(iframe, {
+  executeCommand: (command) => {
+    // Whitelist allowed commands
+    const allowed = ['save', 'load', 'export'];
+    if (!allowed.includes(command)) {
+      throw new Error('Invalid command');
+    }
+    handleCommand(command);
+  },
+
+  updateContent: (html) => {
+    // Sanitize HTML before inserting
+    const sanitized = DOMPurify.sanitize(html);
+    document.getElementById('content').innerHTML = sanitized;
+  }
+});
+```
+
+### 2. Use TypeScript for Type Safety
+
+```typescript
+// Define strict types
+interface GuestAPI {
+  processData: (data: number[]) => Promise<number[]>;
+}
+
+interface HostAPI {
+  logMessage: (msg: string) => void;
+}
+
+// Type-safe connection
+const connection = await host.connect<HostAPI, GuestAPI>(
+  worker,
+  {
+    logMessage: (msg: string) => console.log(msg)
+  }
+);
+
+//  TypeScript ensures correctness
+await connection.remote.processData([1, 2, 3]);
+
+//  TypeScript error
+await connection.remote.processData("invalid");
+```
+
+### 3. Limit Exposed API Surface
+
+**Principle of Least Privilege:** Only expose what's necessary.
+
+```javascript
+//  BAD: Exposes everything
+const connection = await host.connect(iframe, {
+  database: database, // Full DB access!
+  fileSystem: fs, // Full FS access!
+  credentials: { apiKey, secret }, // Sensitive data!
+});
+
+//  GOOD: Minimal, controlled API
+const connection = await host.connect(iframe, {
+  // Only specific, safe operations
+  getData: (id) => database.get(id),
+  saveData: (data) => {
+    // Validate and sanitize
+    if (!isValid(data)) throw new Error('Invalid data');
+    return database.save(sanitize(data));
+  }
+});
+```
+
+### 4. Use Content Security Policy (CSP)
+
+Restrict what iframes can do:
+
+```html
+<!-- Restrict iframe capabilities -->
+<iframe
+  src="https://third-party.com/widget.html"
+  sandbox="allow-scripts allow-same-origin"
+  csp="default-src 'self'; script-src 'self'"
+></iframe>
+```
+
+**sandbox attributes:**
+- `allow-scripts` - Allow JavaScript
+- `allow-same-origin` - Treat as same origin (dangerous!)
+- `allow-forms` - Allow form submission
+- `allow-popups` - Allow popups
+- Empty `sandbox=""` - Maximum restrictions
+
+### 5. Validate Message Origin (Manual Check)
+
+For extra security, manually validate in your methods:
+
+```javascript
+const connection = await host.connect(iframe, {
+  sensitiveOperation: async (data) => {
+    // Re-check origin even though postbridge already did
+    const iframe = document.getElementById('trusted-iframe');
+    const expectedOrigin = new URL(iframe.src).origin;
+
+    // Additional validation logic
+    if (!isTrustedData(data)) {
+      throw new Error('Untrusted data');
+    }
+
+    return performOperation(data);
+  }
+});
+```
+
+### 6. Use HTTPS
+
+Always use HTTPS for iframes to prevent MITM attacks:
+
+```javascript
+//  BAD: HTTP (insecure)
+const iframe = document.createElement('iframe');
+iframe.src = 'http://example.com/widget.html';
+
+//  GOOD: HTTPS (secure)
+iframe.src = 'https://example.com/widget.html';
+```
+
+### 7. Avoid Wildcards in postMessage
+
+Never use `'*'` as the target origin:
+
+```javascript
+// Inside postbridge's internals:
+function postMessageToTarget(target, message, origin) {
+  if (target.postMessage) {
+    //  GOOD: Specific origin
+    target.postMessage(message, origin || '*');
+    // Note: postbridge uses specific origins when available
+  }
+}
+```
+
+## Security by Context
+
+### Workers (Web & Node.js): LOW RISK
+
+**Why safe:**
+- Created from your own code
+- Browser-enforced isolation
+- Can't be spoofed
+- No cross-origin concerns
+
+**Recommendations:**
+-  No special precautions needed
+-  Can trust worker messages
+- ️ Still validate data (general best practice)
+
+### Same-Origin iframes: MEDIUM RISK
+
+**Risks:**
+- Can access parent DOM (if not sandboxed)
+- Shares cookies and storage
+- Could contain vulnerabilities
+
+**Recommendations:**
+- ️ Validate input
+- ️ Use sandbox attribute
+- ️ Limit API surface
+-  Origin validation automatic
+
+### Cross-Origin iframes: HIGH RISK
+
+**Risks:**
+- Runs code you don't control
+- Could be malicious
+- Could change behavior without warning
+- Message spoofing attempts
+
+**Recommendations:**
+- ️️ Strict input validation
+- ️️ Minimal API surface
+- ️️ Sandbox with strict CSP
+- ️️ Never expose sensitive data/functions
+-  Origin validation automatic
+
+## Common Security Pitfalls
+
+### Pitfall 1: Exposing Too Much
+
+```javascript
+//  DANGEROUS
+const connection = await host.connect(iframe, {
+  // Full API access
+  api: myEntireAPI,
+  // Database access
+  db: database,
+  // All user data
+  userData: currentUser
+});
+
+//  SAFE
+const connection = await host.connect(iframe, {
+  // Only specific, validated operations
+  getUserName: () => currentUser.name,
+  updateProfile: (data) => {
+    if (!validate(data)) throw new Error('Invalid');
+    return updateUserProfile(sanitize(data));
+  }
+});
+```
+
+### Pitfall 2: Trusting Message Content
+
+```javascript
+//  DANGEROUS
+const connection = await host.connect(iframe, {
+  navigate: (url) => {
+    window.location.href = url; // Could navigate to evil.com!
+  },
+
+  loadScript: (src) => {
+    const script = document.createElement('script');
+    script.src = src; // Could load malicious script!
+    document.body.appendChild(script);
+  }
+});
+
+//  SAFE
+const connection = await host.connect(iframe, {
+  navigate: (path) => {
+    // Whitelist allowed paths
+    const allowed = ['/home', '/profile', '/settings'];
+    if (!allowed.includes(path)) {
+      throw new Error('Invalid path');
+    }
+    window.location.href = path;
+  },
+
+  // Don't expose loadScript at all!
+});
+```
+
+### Pitfall 3: Information Leakage
+
+```javascript
+//  DANGEROUS: Error messages leak info
+const connection = await host.connect(iframe, {
+  login: async (username, password) => {
+    const user = await db.findUser(username);
+    if (!user) {
+      throw new Error('User not found in database table users');
+      // Leaks database structure!
+    }
+    // ...
+  }
+});
+
+//  SAFE: Generic error messages
+const connection = await host.connect(iframe, {
+  login: async (username, password) => {
+    const user = await db.findUser(username);
+    if (!user) {
+      throw new Error('Invalid credentials');
+      // Generic, no info leaked
+    }
+    // ...
+  }
+});
+```
+
+### Pitfall 4: Not Handling Malformed Data
+
+```javascript
+//  DANGEROUS: Assumes data structure
+const connection = await host.connect(iframe, {
+  processUser: (user) => {
+    // What if user is null, undefined, or not an object?
+    return database.save({
+      name: user.name.toUpperCase(), // CRASH if user.name is undefined!
+      age: user.age
+    });
+  }
+});
+
+//  SAFE: Validates structure
+const connection = await host.connect(iframe, {
+  processUser: (user) => {
+    // Validate type
+    if (typeof user !== 'object' || user === null) {
+      throw new Error('Invalid user object');
+    }
+
+    // Validate required fields
+    if (typeof user.name !== 'string' || typeof user.age !== 'number') {
+      throw new Error('Invalid user fields');
+    }
+
+    // Now safe to process
+    return database.save({
+      name: user.name.toUpperCase(),
+      age: user.age
+    });
+  }
+});
+```
+
+## Audit Checklist
+
+Before deploying, check:
+
+### For Cross-Origin iframes:
+
+- [ ] Input validation on all exposed methods
+- [ ] Data sanitization (especially HTML/SQL/code)
+- [ ] Minimal API surface (only necessary methods)
+- [ ] No sensitive data in schema
+- [ ] Generic error messages (no info leakage)
+- [ ] iframe sandbox attribute set
+- [ ] CSP headers configured
+- [ ] HTTPS used for iframe src
+- [ ] TypeScript types defined
+
+### For Same-Origin iframes:
+
+- [ ] Input validation
+- [ ] Minimal API surface
+- [ ] sandbox attribute (if possible)
+
+### For Workers:
+
+- [ ] Input validation (general best practice)
+- [ ] No sensitive data unnecessarily exposed
+
+## Example: Secure Cross-Origin Setup
+
+```typescript
+// Host page (https://myapp.com)
+import { host } from 'postbridge';
+
+interface ThirdPartyAPI {
+  render: (data: RenderData) => Promise<void>;
+}
+
+interface MyAPI {
+  getData: () => Promise<SafeData>;
+  saveData: (data: SafeData) => Promise<boolean>;
+}
+
+// Validation schemas
+const SafeDataSchema = z.object({
+  title: z.string().max(100),
+  count: z.number().min(0).max(1000)
+});
+
+const iframe = document.createElement('iframe');
+iframe.src = 'https://thirdparty.com/widget.html';
+iframe.sandbox = 'allow-scripts allow-same-origin';
+document.body.appendChild(iframe);
+
+const connection = await host.connect<MyAPI, ThirdPartyAPI>(iframe, {
+  getData: async () => {
+    // Only return safe, non-sensitive data
+    return {
+      title: 'Public Data',
+      count: 42
+    };
+  },
+
+  saveData: async (data) => {
+    // Strict validation
+    try {
+      const validated = SafeDataSchema.parse(data);
+
+      // Sanitize strings
+      const sanitized = {
+        title: DOMPurify.sanitize(validated.title),
+        count: validated.count
+      };
+
+      // Save to database
+      await database.save(sanitized);
+      return true;
+    } catch (error) {
+      // Generic error (don't leak details)
+      console.error('Validation failed:', error);
+      throw new Error('Invalid data format');
+    }
+  }
+});
+
+// Use the connection safely
+await connection.remote.render({ content: 'Hello' });
+```
+
+## Summary
+
+**postbridge Security Features:**
+-  Automatic origin validation for iframes
+-  Connection ID isolation
+-  Worker isolation (trusted by default)
+-  TypeScript type safety
+
+**Your Responsibilities:**
+- ️ Validate all input data
+- ️ Sanitize output (especially HTML)
+- ️ Limit API surface
+- ️ Use HTTPS for iframes
+- ️ Configure CSP and sandbox
+- ️ Don't expose sensitive data
+
+**Security by Context:**
+- Workers: Low risk (trusted)
+- Same-origin iframes: Medium risk (validate)
+- Cross-origin iframes: High risk (strict validation)
+
+**Next steps:**
+- Review [Architecture](?path=/docs/architecture-overview--docs) - How security is implemented
+- Check [iframes Guide](?path=/docs/guides-iframes--docs) - iframe-specific security
+- Read [Error Handling](?path=/docs/guides-error-handling--docs) - Secure error management
+
+---
+
+Security is a shared responsibility: postbridge provides the foundation, but you must implement proper validation and sanitization!

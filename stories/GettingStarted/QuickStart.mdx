@@ -1,0 +1,284 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Getting Started/Quick Start" />
+
+# Quick Start Guide
+
+Get up and running with postbridge in under 5 minutes! This guide will walk you through creating your first bidirectional RPC connection between a main thread and a Web Worker.
+
+## Installation
+
+```bash
+npm install postbridge
+```
+
+Or with yarn:
+
+```bash
+yarn add postbridge
+```
+
+## Your First postbridge Application
+
+We'll build a simple application where:
+- The **main thread** (host) asks a worker to process some data
+- The **worker** (guest) processes the data and logs results back to the host
+
+### Step 1: Create the Worker File
+
+Create a file called `worker.js`:
+
+```javascript
+// worker.js
+import { guest } from 'postbridge';
+
+// Connect to the host with our API
+const connection = await guest.connect({
+  // Method the host can call
+  processNumbers: (numbers) => {
+    const doubled = numbers.map(n => n * 2);
+
+    // Call host method to log result
+    connection.remote.log(`Processed ${numbers.length} numbers`);
+
+    return doubled;
+  },
+
+  calculateSum: (numbers) => {
+    return numbers.reduce((sum, n) => sum + n, 0);
+  }
+});
+
+console.log('Worker connected and ready!');
+```
+
+### Step 2: Create the Main File
+
+Create your main file (`main.js` or `index.html` with script):
+
+```javascript
+// main.js
+import { host } from 'postbridge';
+
+async function main() {
+  // Create the worker
+  const worker = new Worker('worker.js', { type: 'module' });
+
+  // Connect to worker with our API
+  const connection = await host.connect(worker, {
+    // Method the worker can call
+    log: (message) => {
+      console.log('[Worker]:', message);
+    }
+  });
+
+  console.log('Connected to worker!');
+
+  // Call worker methods
+  const doubled = await connection.remote.processNumbers([1, 2, 3, 4, 5]);
+  console.log('Doubled:', doubled); // [2, 4, 6, 8, 10]
+
+  const sum = await connection.remote.calculateSum([1, 2, 3, 4, 5]);
+  console.log('Sum:', sum); // 15
+
+  // Clean up when done
+  connection.close();
+}
+
+main();
+```
+
+### Step 3: Run It!
+
+**In the browser:**
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>postbridge Quick Start</title>
+</head>
+<body>
+  <h1>Check the console!</h1>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
+```
+
+**In Node.js:**
+```bash
+node main.js
+```
+
+### Expected Output
+
+```
+Connected to worker!
+[Worker]: Processed 5 numbers
+Doubled: [2, 4, 6, 8, 10]
+Sum: 15
+```
+
+## What Just Happened?
+
+Let's break down the magic:
+
+### 1. **Schema Definition**
+Both host and guest define a **schema** - an object containing functions they want to expose:
+
+```javascript
+// Host schema
+{
+  log: (message) => { /* ... */ }
+}
+
+// Guest schema
+{
+  processNumbers: (numbers) => { /* ... */ },
+  calculateSum: (numbers) => { /* ... */ }
+}
+```
+
+### 2. **Connection Establishment**
+- Host calls `host.connect(worker, schema)`
+- Guest calls `guest.connect(schema)`
+- They perform a handshake behind the scenes
+- Both receive a `Connection` object
+
+### 3. **The `remote` Object**
+The `Connection` has a `remote` property that's a proxy to the other side's methods:
+
+```javascript
+// In host, call guest methods:
+await connection.remote.processNumbers([1, 2, 3]);
+
+// In guest, call host methods:
+await connection.remote.log('Hello!');
+```
+
+### 4. **Everything is Async**
+All RPC calls return Promises, even if the original function is synchronous:
+
+```javascript
+// This method is sync...
+calculateSum: (numbers) => numbers.reduce((a, b) => a + b, 0)
+
+// ...but calling it is async!
+const sum = await connection.remote.calculateSum([1, 2, 3]);
+```
+
+## Next Steps
+
+Now that you have a basic understanding, explore more advanced features:
+
+###  Learn More About:
+- **[RPC Basics](?path=/docs/fundamentals-rpcbasics--docs)** - Understand the concepts
+- **[Bidirectional RPC](?path=/docs/guides-bidirectionalrpc--docs)** - Both sides calling each other
+- **[Transferables](?path=/docs/guides-transferables--docs)** - Efficient binary data transfer
+- **[Error Handling](?path=/docs/guides-error-handling--docs)** - Dealing with failures
+
+###  Try Different Platforms:
+- **[Web Workers Guide](?path=/docs/guides-webworkers--docs)** - More Web Worker patterns
+- **[iframes Guide](?path=/docs/guides-iframes--docs)** - Cross-frame communication
+- **[Node.js Workers Guide](?path=/docs/guides-nodejsworkers--docs)** - Server-side workers
+
+###  Browse Examples:
+- **[Image Processing](?path=/docs/examples-imageprocessing--docs)** - Real-world worker example
+- **[Data Pipeline](?path=/docs/examples-datapipeline--docs)** - Chaining multiple workers
+- **[Bidirectional Chat](?path=/docs/introduction--docs)** - Two-way communication
+
+## Common Patterns
+
+### Pattern 1: Initialization with onConnectionSetup
+
+Sometimes the guest needs data from the host before it's ready:
+
+```javascript
+// worker.js
+const connection = await guest.connect({
+  process: (data) => { /* uses config */ }
+}, {
+  onConnectionSetup: async (remote) => {
+    // Load config from host before connection resolves
+    const config = await remote.getConfig();
+    applyConfig(config);
+  }
+});
+```
+
+### Pattern 2: Nested APIs
+
+Organize methods into namespaces:
+
+```javascript
+// Host
+const connection = await host.connect(worker, {
+  math: {
+    add: (a, b) => a + b,
+    multiply: (a, b) => a * b
+  },
+  string: {
+    uppercase: (s) => s.toUpperCase(),
+    lowercase: (s) => s.toLowerCase()
+  }
+});
+
+// Call nested methods
+await connection.remote.math.add(5, 3); // 8
+await connection.remote.string.uppercase('hello'); // 'HELLO'
+```
+
+### Pattern 3: Passing Configuration
+
+Non-function properties in the schema are passed as configuration:
+
+```javascript
+// Host
+const connection = await host.connect(worker, {
+  config: { apiKey: 'abc123', debug: true },
+  doSomething: () => { /* ... */ }
+});
+
+// Worker receives config in schema
+const connection = await guest.connect({
+  // ...
+});
+// Access via connection or handshake event
+```
+
+## Troubleshooting
+
+### Worker doesn't load
+Make sure to use `type: 'module'` if using ES6 imports:
+```javascript
+const worker = new Worker('worker.js', { type: 'module' });
+```
+
+### "Connection timeout" errors
+The guest must call `guest.connect()` for the handshake to complete. Make sure the worker code is running.
+
+### TypeScript errors
+postbridge is fully typed! Import types:
+```typescript
+import { host, Connection, Schema } from 'postbridge';
+```
+
+### Can't call methods
+Remember: all calls must use `await` and go through `connection.remote`:
+```javascript
+//  Wrong
+connection.processNumbers([1, 2, 3]);
+
+//  Correct
+await connection.remote.processNumbers([1, 2, 3]);
+```
+
+## Summary
+
+You've learned:
+-  How to install postbridge
+-  How to create a host and guest connection
+-  How to define schemas with methods
+-  How to call methods across contexts using `remote`
+-  Basic patterns and troubleshooting
+
+**Ready for more?** Check out the [Fundamentals](?path=/docs/fundamentals-rpc-basics--docs) section to understand how RPC works under the hood!

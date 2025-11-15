@@ -1,0 +1,722 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Error Handling" />
+
+# Error Handling Guide
+
+Complete guide to handling errors in postbridge applications.
+
+## Error Types
+
+postbridge errors can occur at different stages:
+
+### 1. Connection Errors
+
+Errors during connection establishment.
+
+```javascript
+try {
+  const connection = await host.connect(worker, {});
+} catch (error) {
+  console.error('Connection failed:', error);
+  // Possible causes:
+  // - Worker failed to load
+  // - Worker crashed during handshake
+  // - Timeout (guest never responds)
+}
+```
+
+### 2. RPC Call Errors
+
+Errors when calling remote methods.
+
+```javascript
+try {
+  const result = await connection.remote.processData(data);
+} catch (error) {
+  console.error('RPC call failed:', error);
+  // Possible causes:
+  // - Method doesn't exist
+  // - Method threw an error
+  // - Worker crashed during execution
+  // - Invalid arguments
+}
+```
+
+### 3. Method Execution Errors
+
+Errors thrown by your methods.
+
+```javascript
+const connection = await guest.connect({
+  divide: (a, b) => {
+    if (b === 0) {
+      throw new Error('Division by zero');
+    }
+    return a / b;
+  }
+});
+
+// When called from host:
+try {
+  await connection.remote.divide(10, 0);
+} catch (error) {
+  console.error(error.message); // "Division by zero"
+}
+```
+
+## Error Propagation
+
+### Synchronous Errors
+
+```javascript
+// Guest method (sync)
+const connection = await guest.connect({
+  validate: (data) => {
+    if (!data) {
+      throw new Error('Data is required');
+    }
+    return true;
+  }
+});
+
+// Host call
+try {
+  await connection.remote.validate(null);
+} catch (error) {
+  console.error(error.message); // "Data is required"
+  // Error thrown in guest, caught in host
+}
+```
+
+### Asynchronous Errors
+
+```javascript
+// Guest method (async)
+const connection = await guest.connect({
+  fetchData: async (url) => {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return response.json();
+  }
+});
+
+// Host call
+try {
+  await connection.remote.fetchData('https://invalid-url');
+} catch (error) {
+  console.error(error.message); // "HTTP 404"
+}
+```
+
+### Error in Bidirectional Call
+
+```javascript
+// Host
+const connection = await host.connect(worker, {
+  validate: (data) => {
+    if (!data.valid) {
+      throw new Error('Validation failed');
+    }
+    return true;
+  }
+});
+
+// Worker
+const connection = await guest.connect({
+  process: async (data, remote) => {
+    try {
+      // Call host for validation
+      await remote.validate(data);
+    } catch (error) {
+      // Host's error caught in worker
+      console.error('Host validation failed:', error.message);
+      throw new Error('Cannot process invalid data');
+    }
+  }
+});
+
+// Host calls worker
+try {
+  await connection.remote.process({ valid: false });
+} catch (error) {
+  // Worker's error (wrapping host's error) caught in host
+  console.error(error.message); // "Cannot process invalid data"
+}
+```
+
+## Error Handling Patterns
+
+### Pattern 1: Try-Catch with Cleanup
+
+```javascript
+const worker = new Worker('worker.js');
+let connection;
+
+try {
+  connection = await host.connect(worker, {});
+
+  const result = await connection.remote.processData(data);
+
+  return result;
+} catch (error) {
+  console.error('Processing failed:', error);
+  throw error;
+} finally {
+  // Always cleanup
+  connection?.close();
+}
+```
+
+### Pattern 2: Error Codes
+
+```javascript
+// Guest
+const connection = await guest.connect({
+  processFile: async (file) => {
+    if (!file) {
+      const error = new Error('File not provided');
+      error.code = 'MISSING_FILE';
+      throw error;
+    }
+
+    if (file.size > MAX_SIZE) {
+      const error = new Error('File too large');
+      error.code = 'FILE_TOO_LARGE';
+      error.maxSize = MAX_SIZE;
+      throw error;
+    }
+
+    return process(file);
+  }
+});
+
+// Host
+try {
+  await connection.remote.processFile(file);
+} catch (error) {
+  switch (error.code) {
+    case 'MISSING_FILE':
+      showError('Please select a file');
+      break;
+    case 'FILE_TOO_LARGE':
+      showError(`File must be under ${error.maxSize} bytes`);
+      break;
+    default:
+      showError('Unknown error occurred');
+  }
+}
+```
+
+### Pattern 3: Retry with Backoff
+
+```javascript
+async function callWithRetry(fn, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (i === maxRetries - 1) {
+        throw error; // Last attempt failed
+      }
+
+      // Exponential backoff
+      const delay = Math.pow(2, i) * 1000;
+      console.log(`Retry ${i + 1}/${maxRetries} after ${delay}ms`);
+      await sleep(delay);
+    }
+  }
+}
+
+// Usage
+try {
+  const result = await callWithRetry(() =>
+    connection.remote.unreliableOperation()
+  );
+} catch (error) {
+  console.error('All retries failed:', error);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+```
+
+### Pattern 4: Fallback Values
+
+```javascript
+async function getDataWithFallback(id) {
+  try {
+    return await connection.remote.fetchData(id);
+  } catch (error) {
+    console.warn('Failed to fetch data, using fallback:', error);
+    return { id, data: 'fallback-value', error: true };
+  }
+}
+```
+
+### Pattern 5: Error Aggregation
+
+```javascript
+const results = await Promise.allSettled(
+  items.map(item =>
+    connection.remote.processItem(item)
+  )
+);
+
+const successful = results.filter(r => r.status === 'fulfilled');
+const failed = results.filter(r => r.status === 'rejected');
+
+console.log(`Processed: ${successful.length}, Failed: ${failed.length}`);
+
+if (failed.length > 0) {
+  console.error('Errors:', failed.map(r => r.reason.message));
+}
+```
+
+### Pattern 6: Circuit Breaker
+
+```javascript
+class CircuitBreaker {
+  constructor(threshold = 5, timeout = 60000) {
+    this.failures = 0;
+    this.threshold = threshold;
+    this.timeout = timeout;
+    this.state = 'closed'; // closed, open, half-open
+    this.nextAttempt = Date.now();
+  }
+
+  async call(fn) {
+    if (this.state === 'open') {
+      if (Date.now() < this.nextAttempt) {
+        throw new Error('Circuit breaker is open');
+      }
+      this.state = 'half-open';
+    }
+
+    try {
+      const result = await fn();
+
+      // Success - reset
+      if (this.state === 'half-open') {
+        this.state = 'closed';
+        this.failures = 0;
+      }
+
+      return result;
+    } catch (error) {
+      this.failures++;
+
+      if (this.failures >= this.threshold) {
+        this.state = 'open';
+        this.nextAttempt = Date.now() + this.timeout;
+        console.error('Circuit breaker opened');
+      }
+
+      throw error;
+    }
+  }
+}
+
+// Usage
+const breaker = new CircuitBreaker();
+
+try {
+  const result = await breaker.call(() =>
+    connection.remote.unreliableService()
+  );
+} catch (error) {
+  console.error('Call failed:', error);
+}
+```
+
+## Worker Errors
+
+### Worker Initialization Errors
+
+```javascript
+const worker = new Worker('worker.js');
+
+worker.addEventListener('error', (event) => {
+  console.error('Worker error:', {
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno
+  });
+});
+
+worker.addEventListener('messageerror', (event) => {
+  console.error('Message deserialization error:', event);
+});
+
+try {
+  const connection = await host.connect(worker, {});
+} catch (error) {
+  console.error('Connection failed:', error);
+}
+```
+
+### Worker Termination Errors
+
+```javascript
+const connection = await host.connect(worker, {});
+
+// Make call
+const promise = connection.remote.longRunningTask();
+
+// Worker terminates before completing
+connection.close(); // or worker.terminate()
+
+// Promise may:
+// 1. Hang forever (no response received)
+// 2. Reject if unregister handlers reject pending calls
+
+try {
+  await promise;
+} catch (error) {
+  console.error('Worker terminated:', error);
+}
+```
+
+### Unhandled Rejections in Worker
+
+```javascript
+// In worker.js
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection in worker:', reason);
+  // Optionally exit to prevent zombie worker
+  process.exit(1);
+});
+
+const connection = await guest.connect({
+  riskyOperation: async () => {
+    // If this throws and isn't caught, triggers unhandledRejection
+    await someAsyncOperation();
+  }
+});
+```
+
+## Error Recovery Strategies
+
+### Strategy 1: Graceful Degradation
+
+```javascript
+async function processData(data) {
+  try {
+    // Try worker processing
+    return await connection.remote.processInWorker(data);
+  } catch (error) {
+    console.warn('Worker failed, processing in main thread:', error);
+    // Fallback to main thread
+    return processInMainThread(data);
+  }
+}
+```
+
+### Strategy 2: Worker Recreation
+
+```javascript
+class ResilientWorkerConnection {
+  constructor(workerScript, schema) {
+    this.workerScript = workerScript;
+    this.schema = schema;
+    this.connection = null;
+    this.reconnecting = false;
+  }
+
+  async connect() {
+    if (this.connection) return this.connection;
+
+    const worker = new Worker(this.workerScript);
+
+    worker.addEventListener('error', () => {
+      console.error('Worker crashed, will reconnect on next call');
+      this.connection = null;
+    });
+
+    this.connection = await host.connect(worker, this.schema);
+    return this.connection;
+  }
+
+  async call(method, ...args) {
+    try {
+      const conn = await this.connect();
+      return await conn.remote[method](...args);
+    } catch (error) {
+      console.error(`Call to ${method} failed:`, error);
+
+      // Reconnect and retry once
+      if (!this.reconnecting) {
+        this.reconnecting = true;
+        this.connection = null;
+
+        try {
+          const conn = await this.connect();
+          return await conn.remote[method](...args);
+        } finally {
+          this.reconnecting = false;
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  close() {
+    this.connection?.close();
+    this.connection = null;
+  }
+}
+
+// Usage
+const resilient = new ResilientWorkerConnection('worker.js', {});
+const result = await resilient.call('processData', data);
+```
+
+### Strategy 3: Error Boundaries (React-style)
+
+```javascript
+class ErrorBoundary {
+  constructor(fallback) {
+    this.fallback = fallback;
+    this.error = null;
+  }
+
+  async try(fn) {
+    try {
+      this.error = null;
+      return await fn();
+    } catch (error) {
+      this.error = error;
+      console.error('Caught error:', error);
+      return this.fallback(error);
+    }
+  }
+
+  hasError() {
+    return this.error !== null;
+  }
+
+  getError() {
+    return this.error;
+  }
+}
+
+// Usage
+const boundary = new ErrorBoundary((error) => ({
+  success: false,
+  error: error.message
+}));
+
+const result = await boundary.try(() =>
+  connection.remote.riskyOperation()
+);
+
+if (boundary.hasError()) {
+  console.log('Operation failed, using fallback result:', result);
+}
+```
+
+## Validation Errors
+
+### Input Validation
+
+```javascript
+const connection = await guest.connect({
+  processUser: (user) => {
+    // Validate input
+    if (!user || typeof user !== 'object') {
+      throw new Error('Invalid user object');
+    }
+
+    if (!user.name || typeof user.name !== 'string') {
+      throw new Error('User name is required and must be a string');
+    }
+
+    if (!user.email || !isValidEmail(user.email)) {
+      throw new Error('Valid email is required');
+    }
+
+    if (user.age !== undefined && (typeof user.age !== 'number' || user.age < 0)) {
+      throw new Error('Age must be a positive number');
+    }
+
+    return processUser(user);
+  }
+});
+```
+
+### Schema Validation
+
+```javascript
+import { z } from 'zod';
+
+const UserSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  age: z.number().positive().optional()
+});
+
+const connection = await guest.connect({
+  processUser: (user) => {
+    try {
+      // Validate with Zod
+      const validated = UserSchema.parse(user);
+      return processUser(validated);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        throw new Error(`Validation failed: ${error.errors.map(e => e.message).join(', ')}`);
+      }
+      throw error;
+    }
+  }
+});
+```
+
+## Logging and Monitoring
+
+### Error Logging
+
+```javascript
+function logError(error, context = {}) {
+  console.error('Error occurred:', {
+    message: error.message,
+    stack: error.stack,
+    code: error.code,
+    timestamp: new Date().toISOString(),
+    ...context
+  });
+
+  // Send to error tracking service
+  // errorTracker.captureException(error, { extra: context });
+}
+
+try {
+  await connection.remote.processData(data);
+} catch (error) {
+  logError(error, {
+    operation: 'processData',
+    dataSize: data.length,
+    workerId: connection.id
+  });
+  throw error;
+}
+```
+
+### Error Metrics
+
+```javascript
+const errorMetrics = {
+  total: 0,
+  byType: {},
+  byMethod: {}
+};
+
+async function callWithMetrics(method, ...args) {
+  try {
+    return await connection.remote[method](...args);
+  } catch (error) {
+    errorMetrics.total++;
+
+    const errorType = error.code || 'UNKNOWN';
+    errorMetrics.byType[errorType] = (errorMetrics.byType[errorType] || 0) + 1;
+    errorMetrics.byMethod[method] = (errorMetrics.byMethod[method] || 0) + 1;
+
+    throw error;
+  }
+}
+
+// View metrics
+console.log('Error metrics:', errorMetrics);
+```
+
+## TypeScript Error Handling
+
+```typescript
+// Define error types
+class ValidationError extends Error {
+  constructor(message: string, public field: string) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
+
+class NotFoundError extends Error {
+  constructor(message: string, public id: string) {
+    super(message);
+    this.name = 'NotFoundError';
+  }
+}
+
+// Type-safe error handling
+const connection = await guest.connect({
+  getUser: (id: string) => {
+    if (!id) {
+      throw new ValidationError('ID is required', 'id');
+    }
+
+    const user = database.find(id);
+
+    if (!user) {
+      throw new NotFoundError('User not found', id);
+    }
+
+    return user;
+  }
+});
+
+// Host with type guards
+try {
+  const user = await connection.remote.getUser('123');
+} catch (error) {
+  if (error instanceof ValidationError) {
+    console.error(`Validation error on field ${error.field}:`, error.message);
+  } else if (error instanceof NotFoundError) {
+    console.error(`Not found (ID: ${error.id}):`, error.message);
+  } else {
+    console.error('Unknown error:', error);
+  }
+}
+```
+
+## Best Practices
+
+1. **Always use try-catch** for RPC calls
+2. **Provide meaningful error messages** with context
+3. **Use error codes** for different error types
+4. **Validate input** before processing
+5. **Log errors** with relevant context
+6. **Clean up resources** in finally blocks
+7. **Handle worker errors** with event listeners
+8. **Consider retry strategies** for transient failures
+9. **Use TypeScript** for type-safe error handling
+10. **Test error cases** thoroughly
+
+## Summary
+
+**Error types:**
+- Connection errors
+- RPC call errors
+- Method execution errors
+
+**Error patterns:**
+- Try-catch with cleanup
+- Error codes
+- Retry with backoff
+- Fallback values
+- Circuit breaker
+
+**Recovery strategies:**
+- Graceful degradation
+- Worker recreation
+- Error boundaries
+
+**Next steps:**
+- [Bidirectional RPC](?path=/docs/guides-bidirectional-rpc--docs)
+- [Web Workers Guide](?path=/docs/guides-web-workers--docs)
+- [Examples](?path=/docs/examples-workers--docs)

@@ -1,0 +1,656 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Architecture/Handshake" />
+
+# Handshake Protocol
+
+The handshake is the connection establishment process between host and guest. It's a critical phase where both sides exchange their APIs and set up communication channels.
+
+## Why a Handshake?
+
+Before any RPC calls can happen, both sides need to:
+
+1. **Discover each other's methods** - What functions can I call?
+2. **Establish a connection ID** - How do we route messages?
+3. **Set up message handlers** - How do we process incoming calls?
+4. **Confirm readiness** - Is the other side ready to receive calls?
+
+The handshake solves all of these problems in a **three-message protocol**.
+
+## Handshake Flow
+
+### Complete Flow Diagram
+
+```
+┌──────────────────┐                               ┌──────────────────┐
+│      HOST        │                               │      GUEST       │
+│  (Main Thread)   │                               │     (Worker)     │
+└────────┬─────────┘                               └────────┬─────────┘
+         │                                                  │
+         │ 1. host.connect(worker, hostSchema)             │
+         │    - Generate connectionID: "abc123"            │
+         │    - Extract host methods: ['log', 'getData']  │
+         │    - Start listening for HANDSHAKE_REQUEST      │
+         │                                                  │
+         │                           2. guest.connect(guestSchema)
+         │                              - Extract guest methods: ['process']
+         │                              - Send handshake request
+         │                                                  │
+         │◄────────────────── MESSAGE 1 ─────────────────────┤
+         │                                                  │
+         │            HANDSHAKE_REQUEST                     │
+         │            {                                     │
+         │              action: 'POSTBRIDGE/HANDSHAKE_REQUEST',
+         │              methodNames: ['process'],           │
+         │              schema: { config: {...} }           │
+         │            }                                     │
+         │                                                  │
+         │ 3. Process request                              │
+         │    - Validate guest (security check)            │
+         │    - Register guest's methods as remote         │
+         │      → remote.process() created                 │
+         │    - Register host's methods as local           │
+         │      → Listen for calls to 'log', 'getData'     │
+         │    - Store connection in connections map        │
+         │    - Send handshake reply                       │
+         │                                                  │
+         ├────────────────── MESSAGE 2 ──────────────────────►│
+         │                                                  │
+         │            HANDSHAKE_REPLY                       │
+         │            {                                     │
+         │              action: 'POSTBRIDGE/HANDSHAKE_REPLY',  │
+         │              connectionID: 'abc123',             │
+         │              methodNames: ['log', 'getData'],    │
+         │              schema: { version: '1.0' }          │
+         │            }                                     │
+         │                                                  │
+         │                           4. Process reply
+         │                              - Register host's methods as remote
+         │                                → remote.log(), remote.getData()
+         │                              - Register guest's methods as local
+         │                                → Listen for calls to 'process'
+         │                              - Run onConnectionSetup (if provided)
+         │                              - Send confirmation
+         │                                                  │
+         │◄────────────────── MESSAGE 3 ─────────────────────┤
+         │                                                  │
+         │         HANDSHAKE_REPLY (Confirmation)           │
+         │         {                                        │
+         │           action: 'POSTBRIDGE/HANDSHAKE_REPLY',     │
+         │           connectionID: 'abc123'                 │
+         │         }                                        │
+         │                                                  │
+         │ 5. Connection confirmed                         │
+         │    - Resolve host.connect() promise             │
+         │    - Connection ready                           │
+         │                                                  │
+         ▼                                                  ▼
+   CONNECTED                                          CONNECTED
+   Can call:                                          Can call:
+   - remote.process()                                 - remote.log()
+                                                      - remote.getData()
+```
+
+## Message Details
+
+### Message 1: HANDSHAKE_REQUEST (Guest → Host)
+
+**Sent by:** Guest when `guest.connect()` is called
+**Purpose:** Initiate connection and share guest's API
+
+```javascript
+{
+  action: 'POSTBRIDGE/HANDSHAKE_REQUEST',
+  methodNames: ['processData', 'calculate'],
+  schema: {
+    // Non-function properties (configuration)
+    version: '1.0',
+    capabilities: ['gpu', 'wasm']
+  }
+}
+```
+
+**Fields:**
+- `action`: Identifies this as a handshake request
+- `methodNames`: Array of function names the guest exposes
+- `schema`: Full schema object (functions filtered out, only data remains)
+
+**Code (Guest):**
+```javascript
+// guest.ts
+function connect(schema = {}) {
+  const localMethods = extractMethods(schema); // { processData: fn, calculate: fn }
+  const methodNames = Object.keys(localMethods); // ['processData', 'calculate']
+
+  // Send handshake request
+  const payload = {
+    action: actions.HANDSHAKE_REQUEST,
+    methodNames,
+    schema // Configuration data only
+  };
+  postMessageToTarget(sendTo, payload);
+}
+```
+
+### Message 2: HANDSHAKE_REPLY (Host → Guest)
+
+**Sent by:** Host after receiving and processing HANDSHAKE_REQUEST
+**Purpose:** Share host's API and assign connection ID
+
+```javascript
+{
+  action: 'POSTBRIDGE/HANDSHAKE_REPLY',
+  connectionID: 'abc123-def456-789',
+  methodNames: ['log', 'getData', 'saveData'],
+  schema: {
+    // Non-function properties
+    apiVersion: '2.0',
+    features: ['persistence', 'notifications']
+  }
+}
+```
+
+**Fields:**
+- `action`: Identifies this as a handshake reply
+- `connectionID`: **Unique ID** for this connection (generated by host)
+- `methodNames`: Array of function names the host exposes
+- `schema`: Full schema object (functions filtered out)
+
+**Code (Host):**
+```javascript
+// host.ts
+function handleHandshake(event) {
+  const eventData = getEventData(event);
+
+  if (eventData?.action !== actions.HANDSHAKE_REQUEST) return;
+
+  // Generate unique connection ID
+  const connectionID = generateId(); // 'abc123-def456-789'
+
+  // Extract host methods
+  const localMethods = extractMethods(schema); // { log: fn, getData: fn }
+
+  // Register guest's methods as remote (create proxies)
+  const { remote } = registerRemoteMethods(
+    eventData.schema,
+    eventData.methodNames, // ['processData', 'calculate']
+    connectionID,
+    event,
+    listenTo,
+    sendTo
+  );
+  // Now remote.processData() and remote.calculate() exist
+
+  // Register host's methods as local (set up handlers)
+  registerLocalMethods(localMethods, connectionID, listenTo, sendTo, remote);
+
+  // Send reply with our methods
+  const payload = {
+    action: actions.HANDSHAKE_REPLY,
+    connectionID,
+    methodNames: Object.keys(localMethods), // ['log', 'getData']
+    schema: schema
+  };
+  postMessageToTarget(sendTo, payload, event.origin);
+}
+```
+
+### Message 3: HANDSHAKE_REPLY Confirmation (Guest → Host)
+
+**Sent by:** Guest after receiving and processing HANDSHAKE_REPLY
+**Purpose:** Confirm connection is established and ready
+
+```javascript
+{
+  action: 'POSTBRIDGE/HANDSHAKE_REPLY',
+  connectionID: 'abc123-def456-789'
+}
+```
+
+**Fields:**
+- `action`: Same as Message 2 (HANDSHAKE_REPLY)
+- `connectionID`: The ID assigned by the host
+
+**Why this message?**
+This confirmation ensures the guest has finished setting up its handlers before the host starts calling guest methods. Without it, there would be a race condition where the host might call a guest method before the guest is ready to receive it.
+
+**Code (Guest):**
+```javascript
+// guest.ts
+async function handleHandshakeResponse(event) {
+  const eventData = getEventData(event);
+
+  if (eventData?.action !== actions.HANDSHAKE_REPLY) return;
+
+  // Register host's methods as remote
+  const { remote } = registerRemoteMethods(
+    eventData.schema,
+    eventData.methodNames, // ['log', 'getData']
+    eventData.connectionID,
+    event,
+    listenTo,
+    sendTo
+  );
+  // Now remote.log() and remote.getData() exist
+
+  // Register guest's methods as local
+  registerLocalMethods(localMethods, eventData.connectionID, listenTo, sendTo, remote);
+
+  // Run setup hook if provided
+  await options?.onConnectionSetup?.(remote);
+
+  // Send confirmation
+  const payload = {
+    action: actions.HANDSHAKE_REPLY,
+    connectionID: eventData.connectionID
+  };
+  postMessageToTarget(sendTo, payload, event?.origin);
+
+  // Resolve connection promise
+  resolve({ remote, close, id: eventData.connectionID });
+}
+```
+
+## Handshake Timing
+
+### Synchronous Registration
+
+The host must process the handshake **synchronously** to avoid missing messages:
+
+```javascript
+//  BAD: Async handler might miss messages
+async function handleHandshake(event) {
+  await validateGuest(event); // Async!
+  registerMethods(); // Methods registered too late!
+}
+
+//  GOOD: Sync handler registers immediately
+function handleHandshake(event) {
+  validateGuest(event); // Sync validation
+  registerMethods(); // Immediately ready
+}
+```
+
+### Connection Promise Resolution
+
+**Host:** Promise resolves when **confirmation** (Message 3) is received
+**Guest:** Promise resolves when **sending confirmation** (Message 3)
+
+```javascript
+// Host
+const connection = await host.connect(worker, schema);
+// Resolves after receiving Message 3
+console.log('Host ready!');
+
+// Guest
+const connection = await guest.connect(schema);
+// Resolves after sending Message 3
+console.log('Guest ready!');
+```
+
+## Connection ID Generation
+
+The host generates a **unique connection ID** for each connection:
+
+```javascript
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+// Example IDs:
+// "1699901234567-k2j5h3g8f"
+// "1699901234789-m9n4k1p6q"
+```
+
+**Why unique IDs?**
+- Supports multiple connections to different guests
+- Routes messages to correct connection
+- Prevents message confusion between connections
+
+## Method Registration
+
+### Remote Methods (Proxies)
+
+When registering remote methods, postbridge creates **proxy functions**:
+
+```javascript
+function registerRemoteMethods(schema, methodNames, connectionID, ...) {
+  const remote = {};
+
+  methodNames.forEach(methodName => {
+    // Create proxy function
+    remote[methodName] = (...args) => {
+      const callID = generateId();
+
+      return new Promise((resolve, reject) => {
+        // Store promise resolver
+        responseMap.set(callID, { resolve, reject });
+
+        // Send RPC request
+        postMessage({
+          action: 'RPC_REQUEST',
+          connectionID,
+          callID,
+          method: methodName,
+          args
+        });
+      });
+    };
+  });
+
+  return { remote };
+}
+```
+
+**Result:**
+```javascript
+// Before registration:
+remote // undefined
+
+// After registration:
+remote // { processData: [Function], calculate: [Function] }
+
+// Calling remote method:
+await remote.processData([1, 2, 3]); // Triggers RPC request
+```
+
+### Local Methods (Handlers)
+
+When registering local methods, postbridge sets up **event listeners**:
+
+```javascript
+function registerLocalMethods(methods, connectionID, listenTo, sendTo, remote) {
+  function handleRequest(event) {
+    const data = getEventData(event);
+
+    // Filter for this connection's RPC requests
+    if (data?.action !== 'RPC_REQUEST') return;
+    if (data.connectionID !== connectionID) return;
+
+    // Find and execute method
+    const method = methods[data.method];
+    if (!method) {
+      // Send error
+      postMessage({
+        action: 'RPC_REJECT',
+        connectionID,
+        callID: data.callID,
+        error: `Method ${data.method} not found`
+      });
+      return;
+    }
+
+    // Execute method
+    try {
+      const result = await method(...data.args, remote);
+      // Send result
+      postMessage({
+        action: 'RPC_RESOLVE',
+        connectionID,
+        callID: data.callID,
+        result
+      });
+    } catch (error) {
+      // Send error
+      postMessage({
+        action: 'RPC_REJECT',
+        connectionID,
+        callID: data.callID,
+        error: error.message
+      });
+    }
+  }
+
+  addEventListener(listenTo, 'message', handleRequest);
+}
+```
+
+## Nested Method Handling
+
+For nested APIs, method names include the path:
+
+```javascript
+// Schema with nested methods
+const schema = {
+  math: {
+    add: (a, b) => a + b,
+    multiply: (a, b) => a * b
+  },
+  string: {
+    uppercase: (s) => s.toUpperCase()
+  }
+};
+
+// extractMethods() flattens:
+const methods = {
+  'math.add': (a, b) => a + b,
+  'math.multiply': (a, b) => a * b,
+  'string.uppercase': (s) => s.toUpperCase()
+};
+
+// Handshake sends:
+{
+  methodNames: ['math.add', 'math.multiply', 'string.uppercase']
+}
+
+// remote object is created with nesting:
+remote = {
+  math: {
+    add: [Function],
+    multiply: [Function]
+  },
+  string: {
+    uppercase: [Function]
+  }
+};
+```
+
+## Security During Handshake
+
+### iframe Origin Validation
+
+For iframes, the host validates the sender's origin:
+
+```javascript
+function handleHandshake(event) {
+  const eventData = getEventData(event);
+
+  if (eventData?.action !== actions.HANDSHAKE_REQUEST) return;
+
+  // SECURITY: Validate iframe origin
+  if (!guestIsWorker && !isValidTarget(guest, event)) {
+    console.warn('Invalid handshake from wrong origin');
+    return; // Reject handshake!
+  }
+
+  // Continue with handshake...
+}
+
+function isValidTarget(guest, event) {
+  const iframe = guest as HTMLIFrameElement;
+  const expectedOrigin = getOriginFromURL(iframe.src);
+
+  // Check origin matches
+  if (event.origin !== expectedOrigin) {
+    return false;
+  }
+
+  // Check source matches
+  if (event.source !== iframe.contentWindow) {
+    return false;
+  }
+
+  return true;
+}
+```
+
+### Worker Trust
+
+Workers don't need origin validation:
+
+```javascript
+function handleHandshake(event) {
+  // Workers are inherently trusted
+  if (isWorkerLike(guest)) {
+    // Skip validation, proceed with handshake
+  }
+}
+```
+
+## Handshake Failure Scenarios
+
+### 1. Guest Never Sends Request
+
+```javascript
+// Host
+const connection = await host.connect(worker, schema);
+// Never resolves if worker doesn't call guest.connect()
+```
+
+**Prevention:** Always call `guest.connect()` in guest code
+
+### 2. Host Rejects Handshake (Security)
+
+```javascript
+// Host receives request from wrong origin
+function handleHandshake(event) {
+  if (!isValidTarget(guest, event)) {
+    return; // Silently reject
+  }
+}
+
+// Guest's promise never resolves
+const connection = await guest.connect(schema);
+```
+
+**Prevention:** Ensure iframe src matches expected origin
+
+### 3. Confirmation Never Arrives
+
+```javascript
+// Host
+const connection = await host.connect(worker, schema);
+// Never resolves if guest crashes after Message 2
+```
+
+**Prevention:** Error handling in guest code
+
+## onConnectionSetup Hook
+
+The guest can run initialization code during handshake:
+
+```javascript
+const connection = await guest.connect(schema, {
+  onConnectionSetup: async (remote) => {
+    // Runs BEFORE confirmation (Message 3)
+    // Can call host methods
+    const config = await remote.getConfig();
+    applyConfig(config);
+
+    // After this completes, confirmation is sent
+  }
+});
+
+// Connection ready after hook completes
+```
+
+**Timing:**
+```
+Guest receives Message 2 (HANDSHAKE_REPLY)
+↓
+Register methods
+↓
+Run onConnectionSetup
+↓
+Send Message 3 (confirmation)
+↓
+Resolve promise
+```
+
+## Complete Example
+
+**Host:**
+```javascript
+import { host } from 'postbridge';
+
+const worker = new Worker('worker.js');
+
+console.log('Connecting to worker...');
+
+const connection = await host.connect(worker, {
+  log: (msg) => console.log('[Worker]:', msg),
+  getConfig: () => ({ theme: 'dark', lang: 'en' })
+});
+
+console.log('Connected! Connection ID:', connection.id);
+
+// Can now call worker methods
+const result = await connection.remote.processData([1, 2, 3]);
+console.log('Result:', result);
+```
+
+**Guest:**
+```javascript
+import { guest } from 'postbridge';
+
+console.log('Worker starting, connecting to host...');
+
+const connection = await guest.connect({
+  processData: (data) => data.map(x => x * 2)
+}, {
+  onConnectionSetup: async (remote) => {
+    // Load config from host during handshake
+    const config = await remote.getConfig();
+    console.log('Loaded config:', config);
+
+    // Log message to host
+    await remote.log('Worker initialized');
+  }
+});
+
+console.log('Connected! Ready to receive calls.');
+```
+
+**Output:**
+```
+// Main thread
+Connecting to worker...
+[Worker]: Worker initialized
+Connected! Connection ID: 1699901234567-k2j5h3g8f
+Result: [2, 4, 6]
+
+// Worker
+Worker starting, connecting to host...
+Loaded config: { theme: 'dark', lang: 'en' }
+Connected! Ready to receive calls.
+```
+
+## Summary
+
+**Handshake is a 3-message protocol:**
+1. HANDSHAKE_REQUEST (Guest → Host) - Initiate
+2. HANDSHAKE_REPLY (Host → Guest) - Accept & share API
+3. HANDSHAKE_REPLY (Guest → Host) - Confirm
+
+**What happens during handshake:**
+- Connection ID generated
+- Methods exchanged
+- Proxy functions created
+- Event handlers registered
+- Security validation (for iframes)
+- Setup hook executed (optional)
+
+**After handshake:**
+- Both sides have `connection` object
+- Both can call `connection.remote.*` methods
+- Connection is bidirectional
+- Messages routed by connection ID
+
+**Next steps:**
+- See [Message Flow](./message-flow.md) for RPC call details
+- Review [Connection Lifecycle](./lifecycle.md) for full connection story
+- Check [Security](?path=/docs/fundamentals-security--docs) for validation details
+
+---
+
+The handshake is the foundation of postbridge - it establishes trust, exchanges APIs, and enables bidirectional communication!

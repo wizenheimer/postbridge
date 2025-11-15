@@ -1,0 +1,1097 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Bridge" />
+
+# Bridge: Cross-Tab Broadcasting
+
+Bridge is PostBridge's built-in feature for cross-tab broadcasting. It brings type-safe pub/sub RPC to SharedWorker contexts, enabling automatic state synchronization across browser tabs without requiring developers to write SharedWorker boilerplate.
+
+##  Core Concept
+
+**Problem**: You want multiple browser tabs to stay synchronized, but coordinating state across tabs is complex.
+
+**Solution**: PostBridge's Bridge feature brings the same clean design to cross-tab communication. Your schema functions ARE the handlers - they execute automatically in all tabs!
+
+```typescript
+// Define schema (same code in all tabs)
+const schema = {
+  updateCount: (count) => {
+    state.count = count;
+    updateUI(count); // This runs in ALL tabs!
+  },
+};
+
+// Tab 1
+await conn.remote.updateCount(42);
+//  Executes locally (Tab 1's UI updates)
+//  Broadcasts to all other tabs (their UIs update too)
+
+// No listeners needed - just like PostBridge!
+```
+
+##  Key Features
+
+| Feature                      | Description                                           |
+| ---------------------------- | ----------------------------------------------------- |
+| **Single Schema Definition** | Define functions once in tabs, not in worker          |
+| **PostBridge-Style API**     | Familiar `connection.remote.method(args)` pattern     |
+| **Broadcast Semantics**      | Caller executes locally, others execute automatically |
+| **Direct Messaging**         | Send to specific tabs with `remote(tabID)`            |
+| **No Echo**                  | Sender doesn't receive own broadcasts                 |
+| **Type Safety**              | Full TypeScript support with inference                |
+| **Zero Configuration**       | Worker code embedded as Blob URL                      |
+
+## ️ Important: Multi-Writer Considerations
+
+**Bridge enables multiple tabs to write to shared state simultaneously.** This creates race conditions that don't exist in 1:1 PostBridge communication.
+
+**Key Points:**
+
+- **Shared variables** are best for read-only state that new tabs "catch up" on
+- **Shared functions** should avoid mutating shared state (use explicit values instead)
+- **When combining both**, be aware of multi-writer race conditions
+
+**See our guides:**
+
+- **[Troubleshooting Multi-Writer Issues](?path=/docs/guides-troubleshooting-multi-writer--docs)** - "My counter increments multiple times!" (Quick fix)
+- **[Understanding Shared State in Bridge](?path=/docs/guides-understanding-shared-state--docs)** - Comprehensive guide with deep context
+- **[Shared State Patterns Guide](?path=/docs/guides-shared-state-patterns--docs)** - Quick reference for patterns
+- **[Multiple Connections and Namespaces](?path=/docs/guides-multiple-connections--docs)** - Can I have multiple connections? (Limitations and workarounds)
+
+##  Quick Start
+
+### Basic Usage
+
+```typescript
+import { bridge } from "postbridge";
+
+// Define your schema (same code in all tabs)
+const schema = {
+  updateCount: (count: number, remote) => {
+    remote.count = count;
+    updateUI(count); // This runs in ALL tabs!
+    return count;
+  },
+
+  setUser: (user: User, remote) => {
+    remote.user = user;
+    renderUser(user); // This runs in ALL tabs!
+    return user;
+  },
+};
+
+// Connect (same code in all tabs, defaults to "default" channel)
+const conn = await bridge.connect(schema);
+
+// Or specify a custom channel for isolation
+const conn = await bridge.connect(schema, { channel: "my-app" });
+
+// Or use a custom tab identifier
+const conn = await bridge.connect(schema, {
+  channel: "my-app",
+  tabID: "session-abc123", // Useful for session management or debugging
+});
+
+// Get your tab's unique ID
+console.log("My tab ID:", conn.id);
+
+// Broadcast to all other tabs on the same channel
+const result = await conn.remote.updateCount(42);
+//  Executes locally (your UI updates)
+//  Broadcasts to all other tabs (their UIs update)
+// No listeners needed!
+
+// Send direct message to a specific tab only
+const tabs = await conn.getConnectedTabs();
+const otherTab = tabs.find((id) => id !== conn.id);
+if (otherTab) {
+  await conn.remote(otherTab).updateCount(100);
+  // Only the specified tab executes updateCount()
+}
+```
+
+### Multiple Isolated Apps
+
+Channels allow you to run multiple independent Bridge apps without interference:
+
+```typescript
+// App 1: Counter (channel: 'counter-app')
+const counterConn = await bridge.connect(
+  {
+    counter: 0,
+    increment: (remote) => {
+      remote.counter++;
+      updateCounterUI(remote.counter); // Runs in all tabs!
+    },
+  },
+  { channel: "counter-app" },
+);
+
+// App 2: Chat (channel: 'chat-app')
+const chatConn = await bridge.connect(
+  {
+    messages: [],
+    sendMessage: (msg, remote) => {
+      remote.messages = [...remote.messages, msg];
+      updateChatUI(remote.messages); // Runs in all tabs!
+    },
+  },
+  { channel: "chat-app" },
+);
+
+// These apps are completely isolated:
+// - Different state spaces
+// - Broadcasts don't cross channels
+// - No interference between them
+```
+
+**Live Demo**: See `examples/multi-channel/` in the repository for a working multi-channel demonstration with two independent counters.
+
+##  Direct Messaging
+
+**Live Demo**: See `examples/tab-messaging/` for a complete message relay system demonstrating both broadcast and direct messaging!
+
+Bridge supports both broadcast and direct messaging:
+
+```typescript
+const conn = await bridge.connect(schema);
+
+// Broadcast: Send to ALL tabs
+await conn.remote.notifyAll("Hello everyone!");
+
+// Direct Message: Send to SPECIFIC tab only
+const tabs = await conn.getConnectedTabs();
+const targetTab = tabs[1]; // Pick a specific tab
+await conn.remote(targetTab).sendPrivateMessage("Hello just you!");
+```
+
+**When to use broadcasts vs direct messages:**
+
+| Use Case                           | Broadcast | Direct Message |
+| ---------------------------------- | --------- | -------------- |
+| Sync state across all tabs         |           |                |
+| Update UI in all tabs              |           |                |
+| Leader election announcements      |           |                |
+| P2P communication between two tabs |           |                |
+| Task delegation to specific tab    |           |                |
+| Private notifications              |           |                |
+
+##  How It Works
+
+### Architecture
+
+```
+┌─────────┐         ┌──────────────────┐         ┌─────────┐
+│  Tab A  │         │  SharedWorker    │         │  Tab B  │
+│         │         │  (Dumb Relay)    │         │         │
+└────┬────┘         └────────┬─────────┘         └────┬────┘
+     │                       │                        │
+     │  1. Execute locally   │                        │
+     │     updateCount(42)   │                        │
+     │  ← returns 42         │                        │
+     │                       │                        │
+     │  2. BRIDGE_BROADCAST  │                        │
+     │─────────────────────> │                        │
+     │                       │                        │
+     │                       │  3. BRIDGE_RELAY       │
+     │                       │──────────────────────> │
+     │                       │                        │
+     │                       │      4. Execute locally│
+     │                       │         updateCount(42)│
+     │                       │                        │
+     │                       │                        │
+```
+
+### Flow
+
+1. **Tab A** calls `conn.remote.updateCount(42)`
+2. **Tab A** executes `updateCount(42)` locally and gets result
+3. **Tab A** sends broadcast message to SharedWorker
+4. **SharedWorker** relays message to all tabs except Tab A (no echo)
+5. **Tab B, C, D...** each:
+   - Execute `updateCount(42)` locally
+   - Fire registered listeners with result
+
+##  Examples
+
+### Example 1: Shopping Cart Sync
+
+Synchronize a shopping cart across tabs:
+
+```typescript
+interface CartItem {
+  id: string;
+  name: string;
+  quantity: number;
+}
+
+const schema = {
+  addItem: (item: CartItem) => {
+    state.cart.push(item);
+    return state.cart;
+  },
+
+  removeItem: (itemId: string) => {
+    state.cart = state.cart.filter((i) => i.id !== itemId);
+    return state.cart;
+  },
+
+  updateQuantity: (itemId: string, quantity: number) => {
+    const item = state.cart.find((i) => i.id === itemId);
+    if (item) item.quantity = quantity;
+    return state.cart;
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Schema functions execute automatically in all tabs when called
+// No need for separate listeners!
+
+// Broadcast changes
+await conn.remote.addItem({
+  id: "123",
+  name: "Widget",
+  quantity: 1,
+});
+```
+
+### Example 2: User Authentication State
+
+Keep authentication state synchronized:
+
+```typescript
+const schema = {
+  login: (user: User) => {
+    state.currentUser = user;
+    state.isAuthenticated = true;
+    return { user, isAuthenticated: true };
+  },
+
+  logout: () => {
+    state.currentUser = null;
+    state.isAuthenticated = false;
+    return { isAuthenticated: false };
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Schema functions execute in all tabs automatically
+// logout() will redirect in ALL tabs
+// login() will update UI in ALL tabs
+
+// Trigger logout (all tabs will be redirected)
+await conn.remote.logout();
+```
+
+### Example 3: Theme Switcher
+
+Synchronize theme across tabs:
+
+```typescript
+const schema = {
+  setTheme: (theme: "light" | "dark") => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+    return theme;
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// setTheme() executes automatically in all tabs
+// No separate listener needed!
+
+// Switch theme (applies to all tabs)
+document.getElementById("theme-toggle")?.addEventListener("click", () => {
+  const current = document.documentElement.getAttribute("data-theme");
+  const next = current === "dark" ? "light" : "dark";
+  conn.remote.setTheme(next);
+});
+```
+
+### Example 4: Real-Time Notifications
+
+Broadcast notifications to all tabs:
+
+```typescript
+interface Notification {
+  id: string;
+  message: string;
+  type: "info" | "success" | "error";
+  timestamp: number;
+}
+
+const schema = {
+  showNotification: (notification: Notification) => {
+    state.notifications.push(notification);
+    return notification;
+  },
+
+  dismissNotification: (id: string) => {
+    state.notifications = state.notifications.filter((n) => n.id !== id);
+    return id;
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Schema functions execute in all tabs automatically
+// showNotification() and dismissNotification() run everywhere!
+
+// Trigger notification (shows in all tabs)
+await conn.remote.showNotification({
+  id: crypto.randomUUID(),
+  message: "Your order has shipped!",
+  type: "success",
+  timestamp: Date.now(),
+});
+```
+
+### Example 5: Active Sessions Display
+
+Show number of active tabs and implement presence indicators:
+
+```typescript
+const schema = {
+  activeSessionCount: 0,
+  updatePresence: (count, remote) => {
+    remote.activeSessionCount = count;
+    updatePresenceUI(count);
+  },
+};
+
+const conn = await bridge.connect(schema);
+console.log(`My tab ID: ${conn.id}`);
+
+// Update presence count when tabs change
+async function updatePresenceCount() {
+  const tabs = await conn.getConnectedTabs();
+  await conn.remote.updatePresence(tabs.length);
+}
+
+// Update on connect
+updatePresenceCount();
+
+// updatePresence() executes in all tabs automatically
+// The schema function handles the badge update
+
+// Periodic refresh to catch disconnects
+setInterval(updatePresenceCount, 5000);
+```
+
+### Example 6: Leader Election
+
+Implement simple leader election using tab IDs:
+
+```typescript
+const schema = {
+  currentLeader: null as string | null,
+  announceLeader: (leaderID, remote) => {
+    remote.currentLeader = leaderID;
+    updateLeaderUI(leaderID);
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Elect leader: first tab in alphabetical order
+async function electLeader() {
+  const tabs = await conn.getConnectedTabs();
+  const sortedTabs = tabs.sort();
+  const leaderID = sortedTabs[0];
+
+  // Update if leader changed
+  if (conn.remote.currentLeader !== leaderID) {
+    await conn.remote.announceLeader(leaderID);
+  }
+
+  // Check if I'm the leader
+  const isLeader = leaderID === conn.id;
+  if (isLeader) {
+    console.log("I am the leader!");
+    // Perform leader-only tasks
+    scheduleBackgroundSync();
+  }
+}
+
+// Run election on connect and periodically
+electLeader();
+setInterval(electLeader, 3000);
+```
+
+### Example 7: Task Delegation with Direct Messaging
+
+Distribute work among specific tabs using direct messages:
+
+```typescript
+const schema = {
+  taskQueue: [] as string[],
+  assignTask: (taskId, assignedTo, remote) => {
+    console.log(`Task ${taskId} assigned to ${assignedTo}`);
+    return { taskId, assignedTo };
+  },
+  completeTask: (taskId, result, remote) => {
+    remote.taskQueue = remote.taskQueue.filter((id) => id !== taskId);
+    return { taskId, result };
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Leader tab distributes tasks
+async function distributeTasks(tasks: string[]) {
+  const tabs = await conn.getConnectedTabs();
+  const workers = tabs.filter((id) => id !== conn.id); // All tabs except leader
+
+  // Distribute tasks round-robin
+  tasks.forEach((task, index) => {
+    const workerTab = workers[index % workers.length];
+    // Direct message: assign task to specific tab
+    conn.remote(workerTab).assignTask(task, workerTab);
+  });
+}
+
+// The assignTask schema function already filters by conn.id
+// It executes in all tabs but only processes if assigned to this tab
+
+// Use it
+distributeTasks(["task-1", "task-2", "task-3", "task-4"]);
+```
+
+### Example 8: Peer-to-Peer Chat Between Tabs
+
+Implement private messaging between specific tabs:
+
+```typescript
+const schema = {
+  sendPrivateMessage: (message, from, to, remote) => {
+    return { message, from, to, timestamp: Date.now() };
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Send private message to specific tab
+async function sendPrivateMessage(targetTabID: string, message: string) {
+  await conn.remote(targetTabID).sendPrivateMessage(message, conn.id, targetTabID);
+  console.log(`Sent private message to ${targetTabID}`);
+}
+
+// The sendPrivateMessage schema function handles filtering automatically
+// It checks msg.to === remote.id in the function itself
+
+// UI integration
+const tabs = await conn.getConnectedTabs();
+tabs.forEach((tabID) => {
+  if (tabID !== conn.id) {
+    // Add chat button for this tab
+    addChatButton(tabID, () => sendPrivateMessage(tabID, "Hello!"));
+  }
+});
+```
+
+##  API Reference
+
+### bridge.connect(schema, options?)
+
+Establishes a cross-tab broadcasting connection.
+
+**Parameters:**
+
+- `schema` (required): Object containing functions to broadcast
+- `options` (optional): Configuration options
+  - `workerURL?: string`: Custom SharedWorker URL (defaults to embedded worker)
+  - `channel?: string`: Channel name for isolated state spaces (defaults to "default")
+  - `tabID?: string`: Custom tab identifier (auto-generated if not provided)
+
+**Returns:** `Promise<BridgeConnection>`
+
+```typescript
+// Basic usage
+const conn = await bridge.connect({
+  method1: (arg) => result,
+  method2: (arg) => result,
+});
+
+// With options
+const conn = await bridge.connect(schema, {
+  channel: "my-app", // Namespace for isolation
+  tabID: "session-abc123", // Custom identifier
+  workerURL: "/worker.js", // Custom worker URL
+});
+```
+
+### BridgeConnection
+
+#### Properties
+
+##### `id: string`
+
+Unique identifier for this tab connection.
+
+```typescript
+const conn = await bridge.connect(schema);
+console.log(conn.id); // → "abc-123-def-456"
+
+// Use in comparisons
+
+// Check if you're the leader
+const tabs = await conn.getConnectedTabs();
+const isLeader = tabs.sort()[0] === conn.id;
+```
+
+##### `remote: Schema & ((targetTabID: string) => Schema)`
+
+Callable proxy object supporting both broadcast and direct messaging.
+
+**Broadcast mode** (`remote.method()`):\*\*
+
+```typescript
+// Sends to ALL other tabs on the channel
+await conn.remote.updateCount(5);
+```
+
+**Direct message mode** (`remote(tabID).method()`):\*\*
+
+```typescript
+// Sends to SPECIFIC tab only
+const tabs = await conn.getConnectedTabs();
+await conn.remote(tabs[0]).updateCount(10);
+```
+
+**Access shared state:**
+
+```typescript
+console.log(conn.remote.counter); // Current counter value
+conn.remote.counter = 42; // Updates shared state across all tabs
+```
+
+**Complete example:**
+
+```typescript
+const schema = {
+  counter: 0,
+  broadcastUpdate: (value, remote) => {
+    remote.counter = value;
+    console.log("Broadcast to all");
+  },
+  privateUpdate: (value, remote) => {
+    remote.counter = value;
+    console.log("Direct message");
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Broadcast to all tabs
+await conn.remote.broadcastUpdate(100);
+
+// Send to specific tab
+const tabs = await conn.getConnectedTabs();
+const otherTab = tabs.find((id) => id !== conn.id);
+if (otherTab) {
+  await conn.remote(otherTab).privateUpdate(200);
+}
+```
+
+#### Methods
+
+##### `on<T>(methodName, listener): () => void`
+
+Register a listener for broadcasts from other tabs.
+
+**Parameters:**
+
+- `methodName: string`: The method to listen for
+- `listener: (result: T, senderTabID: string, args: any[]) => void`: Callback function
+
+**Returns:** Unsubscribe function
+
+```typescript
+
+// Later: stop listening
+unsubscribe();
+```
+
+```
+
+##### `getConnectedTabs(): Promise<string[]>`
+
+Get list of all connected tab IDs on this channel.
+
+**Returns:** Promise that resolves to array of tab IDs (includes this tab)
+
+```typescript
+// Get list of all connected tabs on this channel
+const tabIDs = await conn.getConnectedTabs();
+console.log(`Connected tabs: ${tabIDs.join(", ")}`);
+// → "Connected tabs: tab-abc, tab-def, tab-xyz"
+
+// Check if specific tab is connected
+if (tabIDs.includes("tab-abc")) {
+  console.log("Tab abc is online");
+}
+
+// Count connected tabs
+console.log(`${tabIDs.length} tabs connected`);
+```
+
+**Use Cases:**
+
+- Display number of active sessions
+- Coordinate tasks between specific tabs
+- Implement leader election (first tab in list)
+- Show "X other tabs open" in UI
+- Debug multi-tab behavior
+
+**Note:** The returned list includes the current tab's ID, so the minimum length is 1.
+
+##### `close(): void`
+
+Disconnect from SharedWorker and clean up all listeners.
+
+```typescript
+// When done
+conn.close();
+```
+
+##  Type Safety
+
+Bridge is fully type-safe with TypeScript:
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+const schema = {
+  updateUser: (user: User) => {
+    state.user = user;
+    return user;
+  },
+
+  getCount: () => state.count,
+};
+
+const conn = await bridge.connect(schema);
+
+//  Type-safe calls
+await conn.remote.updateUser({ id: 1, name: "Alice", email: "alice@example.com" });
+const count = await conn.remote.getCount();
+
+//  Type errors
+await conn.remote.updateUser({ id: "1" }); // Error: id should be number
+await conn.remote.nonExistent(); // Error: method doesn't exist
+
+//  Type-safe listeners
+```
+
+## ️ Advanced Usage
+
+### Multiple Listeners
+
+Register multiple listeners for the same method:
+
+```typescript
+
+
+```
+
+### Async Methods
+
+Methods can be async:
+
+```typescript
+const schema = {
+  fetchData: async (id: number) => {
+    const response = await fetch(`/api/data/${id}`);
+    const data = await response.json();
+    state.data[id] = data;
+    return data;
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Caller waits for async completion
+const data = await conn.remote.fetchData(123);
+
+// Listeners receive result after async completion
+```
+
+### Error Handling
+
+Errors in local execution are:
+
+1. Thrown to caller
+2. Included in broadcast (so other tabs know about failure)
+
+```typescript
+const schema = {
+  riskyOperation: (value: number) => {
+    if (value < 0) {
+      throw new Error("Value must be positive");
+    }
+    return value * 2;
+  },
+};
+
+const conn = await bridge.connect(schema);
+
+// Caller receives error
+try {
+  await conn.remote.riskyOperation(-5);
+} catch (error) {
+  console.error("Failed:", error);
+}
+
+// Other tabs also get error info
+```
+
+### Conditional Execution
+
+Only execute in listeners under certain conditions:
+
+```typescript
+```
+
+### Custom Tab Identifiers
+
+Use custom tab IDs for session management, debugging, or external system coordination:
+
+```typescript
+// Use case 1: Session-based identification
+const sessionId = getOrCreateSessionId(); // e.g., from localStorage
+const conn = await bridge.connect(schema, {
+  tabID: sessionId,
+  channel: "user-workspace",
+});
+
+// Tab ID persists across page reloads
+console.log(`Session ID: ${conn.id}`); // → consistent across reloads
+
+// Use case 2: Debugging with predictable IDs
+const conn = await bridge.connect(schema, {
+  tabID: `tab-${Date.now()}`, // Timestamp-based ID
+});
+
+// Use case 3: External systems targeting specific tabs
+const conn = await bridge.connect(schema, {
+  tabID: `user-${userId}-window-${windowIndex}`,
+});
+
+// Now external logging/monitoring can reference this exact tab
+analytics.logTabActivity(conn.id, "connected");
+```
+
+**When to use custom tabID:**
+
+- **Session restoration**: Maintain consistent identity across page reloads
+- **External coordination**: Allow backend/logging systems to reference specific tabs
+- **Debugging**: Use predictable IDs for easier troubleshooting
+- **Testing**: Create deterministic test scenarios with known tab IDs
+- **Multi-window apps**: Track which window/tab is which in complex UIs
+
+**When to use auto-generated tabID (default):**
+
+- Simple applications without external tracking needs
+- Ephemeral sessions that don't need persistence
+- When tab identity doesn't matter beyond the current session
+
+**Duplicate Tab ID Handling:**
+
+If a tabID is already in use on a channel, Bridge automatically:
+
+1. Disconnects the old connection with that tabID
+2. Sends an error notification to the old connection
+3. Allows the new connection to proceed with the same tabID
+
+```typescript
+// Tab 1: Connects with custom ID
+const conn1 = await bridge.connect(schema, {
+  tabID: "session-123",
+  channel: "app",
+});
+//  Connected successfully
+
+// Tab 2: Tries to connect with same ID on same channel
+const conn2 = await bridge.connect(schema, {
+  tabID: "session-123", // Same ID
+  channel: "app", // Same channel
+});
+//  Tab 2 connects successfully
+//  Tab 1's connection is automatically closed
+// Tab 1 will see console error: "Duplicate tab ID detected"
+```
+
+This behavior is useful for:
+
+- **Session restoration**: If a user refreshes a page, the new connection replaces the old one
+- **Tab takeover**: Intentionally replacing an old connection with a new one
+- **Connection cleanup**: Automatically removing stale connections
+
+**Note**: Different channels can have the same tabID without conflict:
+
+```typescript
+// These work fine simultaneously - different channels
+const connA = await bridge.connect(schema, {
+  tabID: "my-id",
+  channel: "channel-a",
+});
+
+const connB = await bridge.connect(schema, {
+  tabID: "my-id", // Same tabID, different channel
+  channel: "channel-b",
+});
+//  Both connections work independently
+```
+
+## 🆚 Bridge vs PostBridge RPC
+
+| Feature       | PostBridge RPC                 | Bridge          |
+| ------------- | --------------------------- | --------------------- |
+| Communication | 1:1 (host ↔ guest)         | 1:N (tab ↔ all tabs) |
+| Use Case      | Worker/iframe communication | Cross-tab sync        |
+| Execution     | Remote only                 | Local + broadcast     |
+| Context       | Host/Guest                  | Tabs (peers)          |
+| Worker Logic  | Business logic in worker    | Dumb relay worker     |
+
+## ️ Limitations
+
+### Browser Support
+
+Bridge requires [SharedWorker support](https://caniuse.com/sharedworkers):
+
+-  Chrome/Edge
+-  Firefox
+-  Safari (SharedWorker not supported)
+
+For Safari, consider:
+
+- BroadcastChannel API (simpler but different semantics)
+- localStorage + storage events (less robust)
+- Server-side synchronization
+
+### Performance Considerations
+
+1. **Message Size**: Keep broadcast payloads small. Large data should be stored centrally (IndexedDB, server) and only IDs broadcast.
+
+2. **Frequency**: Avoid broadcasting on every keystroke. Debounce high-frequency updates:
+
+```typescript
+const debouncedUpdate = debounce((value) => {
+  conn.remote.updateValue(value);
+}, 300);
+
+input.addEventListener("input", (e) => {
+  debouncedUpdate(e.target.value);
+});
+```
+
+3. **Tab Count**: Performance degrades with many tabs (10+). Test your use case.
+
+### Security
+
+- SharedWorker code runs in all tabs from same origin
+- Don't broadcast sensitive data (tokens, passwords)
+- Validate data in listeners (other tabs could be compromised)
+
+##  Debugging
+
+### Enable Logging
+
+Add console.logs to methods to trace execution:
+
+```typescript
+const schema = {
+  updateCount: (count: number) => {
+    console.log("[Bridge] updateCount called with:", count);
+    state.count = count;
+    return count;
+  },
+};
+
+```
+
+### Check Tab ID
+
+Identify which tab is which:
+
+```typescript
+const conn = await bridge.connect(schema);
+console.log("My tab ID:", conn.id);
+
+```
+
+### Duplicate Tab ID Detection
+
+If you see "Duplicate tab ID" errors in console:
+
+**Problem**: Two connections trying to use the same tabID on the same channel
+
+**What happens**:
+
+- Old connection is automatically closed
+- New connection takes over with that tabID
+- Old connection sees error in console
+
+**Console output**:
+
+```
+[Bridge Worker] Duplicate tabID "my-id" on channel "app". Disconnecting old connection.
+[Bridge] Handshake error (DUPLICATE_TAB_ID): This tab ID is already in use...
+```
+
+**Solutions**:
+
+1. **Use auto-generated IDs** (default behavior):
+
+```typescript
+// Let Bridge generate unique IDs
+const conn = await bridge.connect(schema);
+```
+
+2. **Use unique custom IDs per tab**:
+
+```typescript
+// Generate unique ID per page load
+const tabID = `tab-${Date.now()}-${Math.random()}`;
+const conn = await bridge.connect(schema, { tabID });
+```
+
+3. **Intentional takeover** (for session restoration):
+
+```typescript
+// Same ID across page refreshes (intended behavior)
+const sessionID = localStorage.getItem("sessionID") || crypto.randomUUID();
+localStorage.setItem("sessionID", sessionID);
+const conn = await bridge.connect(schema, { tabID: sessionID });
+// Old connection (if any) is replaced
+```
+
+**Note**: Duplicate tabIDs are only a problem on the **same channel**. Different channels can safely use the same tabID.
+
+### SharedWorker Console
+
+In Chrome DevTools:
+
+1. Open `chrome://inspect/#workers`
+2. Find your SharedWorker
+3. Click "inspect" to see worker console
+
+##  Best Practices
+
+### 1. Keep Methods Pure
+
+Methods should be idempotent (safe to call multiple times):
+
+```typescript
+//  Good: Idempotent
+const schema = {
+  setTheme: (theme) => {
+    document.documentElement.setAttribute("data-theme", theme);
+    return theme;
+  },
+};
+
+//  Bad: Not idempotent
+const schema = {
+  incrementCounter: () => {
+    state.counter++; // Increments every time, including in other tabs
+    return state.counter;
+  },
+};
+```
+
+### 2. Use Absolute State
+
+Pass complete state, not deltas:
+
+```typescript
+//  Good: Absolute state
+conn.remote.setItems([item1, item2, item3]);
+
+//  Bad: Relative changes
+conn.remote.addItem(item); // Other tabs don't know full state
+```
+
+### 3. Cleanup Listeners
+
+Remove listeners when components unmount:
+
+```typescript
+// React example
+useEffect(() => {
+  const unsubscribe = 
+  return () => unsubscribe(); // Cleanup
+}, []);
+
+// Vue example
+onMounted(() => {
+  const unsubscribe = 
+  onUnmounted(() => unsubscribe());
+});
+```
+
+### 4. Close Connections
+
+Close connection when page unloads:
+
+```typescript
+window.addEventListener("beforeunload", () => {
+  conn.close();
+});
+```
+
+##  Bundle Size
+
+Bridge adds minimal overhead:
+
+- Core: ~3KB gzipped
+- Worker code (embedded): ~1KB gzipped
+- Total: ~4KB gzipped
+
+##  Migration from BroadcastChannel
+
+If you're using `BroadcastChannel`:
+
+```typescript
+// Before (BroadcastChannel)
+const channel = new BroadcastChannel("my-channel");
+
+channel.postMessage({ type: "UPDATE", data: 42 });
+
+channel.onmessage = (event) => {
+  if (event.data.type === "UPDATE") {
+    handleUpdate(event.data.data);
+  }
+};
+
+// After (Bridge)
+const conn = await bridge.connect({
+  update: (data) => {
+    state.data = data;
+    return data;
+  },
+});
+
+
+await conn.remote.update(42);
+```
+
+Benefits:
+
+- Type safety
+- Automatic execution in all tabs
+- No manual message type handling
+- Symmetric API (broadcast = call, receive = execute)
+
+##  See Also
+
+- [PostBridge RPC Guide](?path=/docs/guides-web-workers--docs) - 1:1 communication with workers
+- [SharedWorker MDN](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker)
+- [BroadcastChannel API](https://developer.mozilla.org/en-US/docs/Web/API/Broadcast_Channel_API)

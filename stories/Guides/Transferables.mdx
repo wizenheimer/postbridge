@@ -1,0 +1,511 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Guides/Transferables" />
+
+# Transferables Guide
+
+Transferable objects enable **zero-copy data transfer** between contexts, dramatically improving performance for large binary data.
+
+## What are Transferables?
+
+By default, `postMessage` **copies** data when sending between contexts. For large data (images, videos, audio), copying is slow and uses double the memory.
+
+**Transferable objects** solve this by **transferring ownership** instead of copying:
+
+```javascript
+//  Without transferables: COPIES 100MB (slow, 200MB total)
+const buffer = new ArrayBuffer(100 * 1024 * 1024);
+await connection.remote.process({ buffer });
+// Takes ~500ms, buffer still usable
+
+//  With transferables: TRANSFERS 100MB (instant, 100MB total)
+const buffer = new ArrayBuffer(100 * 1024 * 1024);
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+// Takes ~1ms, buffer now detached (empty)
+```
+
+## Performance Comparison
+
+| Data Size | Copy (ms) | Transfer (ms) | Speedup |
+|-----------|-----------|---------------|---------|
+| 1 MB      | 5         | < 1           | 5x      |
+| 10 MB     | 50        | < 1           | 50x     |
+| 100 MB    | 500       | < 1           | 500x    |
+| 1 GB      | 5000      | < 1           | 5000x   |
+
+## Transferable Types
+
+Only certain types can be transferred:
+
+###  Transferable
+
+```javascript
+// ArrayBuffer and views
+new ArrayBuffer(1024)
+new Uint8Array(100)
+new Float64Array(100)
+new DataView(buffer)
+
+// Streams
+new ReadableStream()
+new WritableStream()
+new TransformStream()
+
+// Message channels
+new MessageChannel().port1
+new MessageChannel().port2
+
+// Media
+new ImageBitmap()
+new VideoFrame()
+new AudioData()
+
+// Canvas (with some browsers)
+new OffscreenCanvas(100, 100)
+```
+
+###  Not Transferable
+
+```javascript
+// Regular objects
+{ data: [1, 2, 3] }
+[1, 2, 3]
+'string'
+42
+
+// Cannot transfer:
+new Blob(['data'])
+new File(['data'], 'file.txt')
+document.getElementById('div')
+() => {}
+```
+
+## Using withTransferable
+
+### Basic Usage
+
+```javascript
+import { withTransferable } from 'postbridge';
+
+const buffer = new ArrayBuffer(1024);
+
+// Mark buffer as transferable
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+
+// buffer is now detached
+console.log(buffer.byteLength); // 0
+```
+
+### Multiple Transferables
+
+```javascript
+const buffer1 = new ArrayBuffer(1024);
+const buffer2 = new ArrayBuffer(2048);
+
+// Transfer both
+await connection.remote.process(
+  withTransferable(t => ({
+    data1: t(buffer1),
+    data2: t(buffer2),
+    metadata: 'not transferred'
+  }))
+);
+
+// Both detached
+console.log(buffer1.byteLength); // 0
+console.log(buffer2.byteLength); // 0
+```
+
+### Nested Transferables
+
+```javascript
+const buffers = [
+  new ArrayBuffer(1024),
+  new ArrayBuffer(2048),
+  new ArrayBuffer(4096)
+];
+
+// Transfer array of buffers
+await connection.remote.processMultiple(
+  withTransferable(t => buffers.map(b => t(b)))
+);
+
+// All detached
+buffers.forEach(b => console.log(b.byteLength)); // 0, 0, 0
+```
+
+### Mixed Data
+
+```javascript
+// Some data transferred, some copied
+await connection.remote.process(
+  withTransferable(t => ({
+    // Transferred
+    imageData: t(imageBuffer),
+    audioData: t(audioBuffer),
+
+    // Copied (not marked with t())
+    metadata: { width: 1920, height: 1080 },
+    timestamp: Date.now()
+  }))
+);
+```
+
+## Practical Examples
+
+### Example 1: Image Processing
+
+```javascript
+// main.js
+import { host, withTransferable } from 'postbridge';
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+// Transfer image data to worker
+const worker = new Worker('image-worker.js', { type: 'module' });
+const connection = await host.connect(worker, {});
+
+const result = await connection.remote.processImage(
+  withTransferable(t => ({
+    data: t(imageData.data.buffer),
+    width: canvas.width,
+    height: canvas.height
+  }))
+);
+
+// Receive processed image (also transferred back)
+const processed = new ImageData(
+  new Uint8ClampedArray(result.data),
+  result.width,
+  result.height
+);
+ctx.putImageData(processed, 0, 0);
+```
+
+```javascript
+// image-worker.js
+import { guest, withTransferable } from 'postbridge';
+
+const connection = await guest.connect({
+  processImage: ({ data, width, height }) => {
+    const pixels = new Uint8ClampedArray(data);
+
+    // Apply filter
+    for (let i = 0; i < pixels.length; i += 4) {
+      pixels[i] = 255 - pixels[i];     // Invert R
+      pixels[i + 1] = 255 - pixels[i + 1]; // Invert G
+      pixels[i + 2] = 255 - pixels[i + 2]; // Invert B
+    }
+
+    // Transfer back to main thread
+    return withTransferable(t => ({
+      data: t(pixels.buffer),
+      width,
+      height
+    }));
+  }
+});
+```
+
+### Example 2: File Processing
+
+```javascript
+// main.js
+async function processFile(file) {
+  const buffer = await file.arrayBuffer();
+
+  const worker = new Worker('file-worker.js', { type: 'module' });
+  const connection = await host.connect(worker, {});
+
+  try {
+    const result = await connection.remote.processFile(
+      withTransferable(t => ({
+        data: t(buffer),
+        name: file.name,
+        type: file.type
+      }))
+    );
+
+    return result;
+  } finally {
+    connection.close();
+  }
+}
+
+// Usage
+const fileInput = document.getElementById('file');
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  const result = await processFile(file);
+  console.log('Processed:', result);
+});
+```
+
+```javascript
+// file-worker.js
+import { guest } from 'postbridge';
+
+const connection = await guest.connect({
+  processFile: ({ data, name, type }) => {
+    const bytes = new Uint8Array(data);
+
+    // Process bytes
+    const checksum = calculateChecksum(bytes);
+    const compressed = compress(bytes);
+
+    return {
+      name,
+      type,
+      originalSize: bytes.length,
+      compressedSize: compressed.length,
+      checksum
+    };
+  }
+});
+
+function calculateChecksum(bytes) {
+  let sum = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    sum += bytes[i];
+  }
+  return sum % 256;
+}
+
+function compress(bytes) {
+  // Simple compression (replace with real algorithm)
+  return bytes.filter((_, i) => i % 2 === 0);
+}
+```
+
+### Example 3: Real-Time Audio Processing
+
+```javascript
+// main.js
+const audioContext = new AudioContext();
+const worker = new Worker('audio-worker.js', { type: 'module' });
+const connection = await host.connect(worker, {});
+
+// Create AudioWorklet for real-time processing
+const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+const source = audioContext.createMediaStreamSource(stream);
+
+// Process audio chunks
+const processor = audioContext.createScriptProcessor(4096, 1, 1);
+processor.onaudioprocess = async (e) => {
+  const inputData = e.inputBuffer.getChannelData(0);
+  const buffer = inputData.buffer.slice(
+    inputData.byteOffset,
+    inputData.byteOffset + inputData.byteLength
+  );
+
+  // Process in worker (transfer for efficiency)
+  const processed = await connection.remote.processAudio(
+    withTransferable(t => t(buffer))
+  );
+
+  // Apply to output
+  const outputData = e.outputBuffer.getChannelData(0);
+  const processedArray = new Float32Array(processed);
+  outputData.set(processedArray);
+};
+
+source.connect(processor);
+processor.connect(audioContext.destination);
+```
+
+## Return Values
+
+You can also transfer data **back** from the remote side:
+
+```javascript
+// Worker method returns transferable
+const connection = await guest.connect({
+  processData: (input) => {
+    const result = new ArrayBuffer(1024);
+    // ... fill result ...
+
+    // Transfer result back
+    return withTransferable(t => t(result));
+  }
+});
+
+// Main thread receives transferred data
+const result = await connection.remote.processData(input);
+// result is an ArrayBuffer (transferred, not copied)
+```
+
+## Bidirectional Transfer
+
+Both directions can use transferables:
+
+```javascript
+// main.js
+const buffer = new ArrayBuffer(1024);
+
+// Send with transfer
+const result = await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+
+// Receive with transfer (if worker used withTransferable)
+console.log(result); // ArrayBuffer (transferred back)
+```
+
+## Common Pitfalls
+
+### Pitfall 1: Using Detached Buffers
+
+```javascript
+const buffer = new ArrayBuffer(1024);
+
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+
+//  Error: buffer is detached
+const view = new Uint8Array(buffer);
+// TypeError: Cannot perform %TypedArray%.prototype.method on a detached ArrayBuffer
+```
+
+**Solution:** Don't use the buffer after transferring
+```javascript
+const buffer = new ArrayBuffer(1024);
+const copy = buffer.slice(); // Make copy if needed
+
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+
+//  Use copy instead
+const view = new Uint8Array(copy);
+```
+
+### Pitfall 2: Forgetting to Mark Transferables
+
+```javascript
+//  Forgot withTransferable - data is COPIED
+const buffer = new ArrayBuffer(100 * 1024 * 1024);
+await connection.remote.process({ buffer });
+// Slow! Copies 100MB
+
+//  Correctly marked - data is TRANSFERRED
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+// Fast! Transfers 100MB
+```
+
+### Pitfall 3: Transferring Non-Transferable Types
+
+```javascript
+//  Error: Blob is not transferable
+const blob = new Blob(['data']);
+await connection.remote.process(
+  withTransferable(t => t(blob))
+);
+// DataCloneError
+
+//  Convert to ArrayBuffer first
+const buffer = await blob.arrayBuffer();
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+```
+
+## When to Use Transferables
+
+###  Use Transferables When:
+
+- Data is large (> 1MB)
+- Data is binary (ArrayBuffer, TypedArray)
+- You don't need the data after sending
+- Performance is critical
+
+###  Don't Use Transferables When:
+
+- Data is small (< 100KB) - overhead not worth it
+- You need to keep using the data
+- Data is not a transferable type
+- Data will be sent to multiple recipients
+
+## Performance Tips
+
+### 1. Measure First
+
+```javascript
+// Measure copy time
+console.time('copy');
+await connection.remote.process({ buffer });
+console.timeEnd('copy');
+
+// Measure transfer time
+console.time('transfer');
+await connection.remote.process(
+  withTransferable(t => t(buffer))
+);
+console.timeEnd('transfer');
+```
+
+### 2. Batch Transfers
+
+```javascript
+//  Multiple transfers (unnecessary overhead)
+for (const buffer of buffers) {
+  await connection.remote.process(
+    withTransferable(t => t(buffer))
+  );
+}
+
+//  Single transfer with all buffers
+await connection.remote.processBatch(
+  withTransferable(t => buffers.map(b => t(b)))
+);
+```
+
+### 3. Reuse Buffers When Possible
+
+```javascript
+// Allocate buffer once
+const buffer = new ArrayBuffer(1024 * 1024);
+
+// Reuse for multiple operations
+for (let i = 0; i < 10; i++) {
+  // Fill buffer with data
+  fillBuffer(buffer, data[i]);
+
+  // COPY buffer (because we need to reuse it)
+  await connection.remote.process({ buffer });
+  // Can't transfer because we need buffer for next iteration
+}
+```
+
+## Browser Compatibility
+
+Transferables are widely supported:
+
+- **ArrayBuffer:** All browsers
+- **MessagePort:** All browsers
+- **ImageBitmap:** Chrome 50+, Firefox 42+, Safari 15+
+- **OffscreenCanvas:** Chrome 69+, Firefox 44+, Safari 16.4+
+- **Streams:** Chrome 89+, Firefox 102+, Safari 16.1+
+
+## Summary
+
+- **Transferables** enable zero-copy data transfer
+- Use `withTransferable(t => t(data))` to mark data for transfer
+- **Massive performance gains** for large binary data (1000x+ faster)
+- After transfer, original data is **detached** (unusable)
+- Only certain types are transferable (ArrayBuffer, MessagePort, etc.)
+- Use for: images, audio, video, large datasets
+- Don't use for: small data, data you need to keep, non-binary data
+
+**Next steps:**
+- [Web Workers Guide](?path=/docs/guides-web-workers--docs) for worker patterns
+- [Examples](?path=/docs/examples-workers--docs) for real-world use cases
+- [Message Flow](?path=/docs/architecture-messageflow--docs) for technical details

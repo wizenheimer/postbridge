@@ -1,0 +1,742 @@
+import { Meta } from '@storybook/blocks';
+
+<Meta title="Architecture/Lifecycle" />
+
+# Connection Lifecycle
+
+This document covers the complete lifecycle of a postbridge connection, from creation to cleanup, including state transitions, resource management, and best practices.
+
+## Lifecycle Phases
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CONNECTION LIFECYCLE                         │
+└─────────────────────────────────────────────────────────────────┘
+
+1. INITIALIZATION
+   │
+   ├─ Host: host.connect(guest, schema)
+   ├─ Guest: guest.connect(schema)
+   │
+   ▼
+
+2. HANDSHAKE
+   │
+   ├─ HANDSHAKE_REQUEST  (Guest → Host)
+   ├─ HANDSHAKE_REPLY    (Host → Guest)
+   ├─ HANDSHAKE_REPLY    (Guest → Host, confirmation)
+   │
+   ▼
+
+3. ACTIVE
+   │
+   ├─ RPC calls can be made
+   ├─ Both sides communicate freely
+   ├─ Methods execute
+   │
+   ▼
+
+4. CLOSING
+   │
+   ├─ connection.close() called
+   ├─ Event listeners removed
+   ├─ Handlers unregistered
+   │
+   ▼
+
+5. CLOSED
+   │
+   ├─ No more RPC calls possible
+   ├─ Resources freed
+   ├─ Worker terminated (if applicable)
+   │
+   ▼
+
+6. GARBAGE COLLECTED
+```
+
+## Phase 1: Initialization
+
+### Host Initialization
+
+```javascript
+const worker = new Worker('worker.js');
+
+// Call host.connect()
+const connectionPromise = host.connect(worker, {
+  log: (msg) => console.log('[Worker]:', msg),
+  getData: () => ({ value: 42 })
+});
+
+// At this point:
+// - connectionID generated
+// - Handshake listeners registered
+// - Waiting for HANDSHAKE_REQUEST
+// - Promise is pending
+```
+
+**State:**
+- connectionID: Generated
+- Connection object: Not yet created
+- Handlers: Handshake listeners only
+- Promise: Pending
+
+**Resources allocated:**
+- Message event listener for handshake
+- connectionID entry in connections map (will be created)
+
+### Guest Initialization
+
+```javascript
+// In worker.js
+import { guest } from 'postbridge';
+
+const connectionPromise = guest.connect({
+  processData: (data) => data.map(x => x * 2)
+});
+
+// At this point:
+// - Methods extracted
+// - Handshake listener registered
+// - HANDSHAKE_REQUEST sent
+// - Waiting for HANDSHAKE_REPLY
+// - Promise is pending
+```
+
+**State:**
+- Methods: Extracted from schema
+- sendTo/listenTo: Auto-detected
+- Handlers: Handshake listener only
+- Promise: Pending
+
+## Phase 2: Handshake
+
+### Step 1: Guest Sends Request
+
+```javascript
+// Guest sends HANDSHAKE_REQUEST
+postMessageToTarget(sendTo, {
+  action: 'POSTBRIDGE/HANDSHAKE_REQUEST',
+  methodNames: ['processData'],
+  schema: { /* config */ }
+});
+```
+
+### Step 2: Host Processes Request
+
+```javascript
+// Host receives HANDSHAKE_REQUEST
+function handleHandshake(event) {
+  const eventData = getEventData(event);
+
+  // Validate
+  if (!isValidTarget(guest, event)) return;
+
+  // Register remote methods (create proxies)
+  const { remote, unregisterRemote } = registerRemoteMethods(...);
+
+  // Register local methods (set up handlers)
+  const unregisterLocal = registerLocalMethods(...);
+
+  // Create connection object
+  const connection = {
+    remote,
+    close: () => {
+      delete connections[connectionID];
+      unregisterRemote();
+      unregisterLocal();
+      // ...cleanup
+    },
+    id: connectionID
+  };
+
+  // Store connection
+  connections[connectionID] = connection;
+
+  // Send reply
+  postMessageToTarget(sendTo, {
+    action: 'POSTBRIDGE/HANDSHAKE_REPLY',
+    connectionID,
+    methodNames: ['log', 'getData'],
+    schema: { /* config */ }
+  });
+}
+```
+
+**Host state after this step:**
+- Connection object: Created
+- Handlers: Handshake + RPC handlers registered
+- connections map: Entry added
+- Promise: Still pending (waiting for confirmation)
+
+### Step 3: Guest Processes Reply
+
+```javascript
+// Guest receives HANDSHAKE_REPLY
+async function handleHandshakeResponse(event) {
+  const eventData = getEventData(event);
+
+  // Register remote methods
+  const { remote, unregisterRemote } = registerRemoteMethods(...);
+
+  // Register local methods
+  const unregisterLocal = registerLocalMethods(...);
+
+  // Run setup hook
+  await options?.onConnectionSetup?.(remote);
+
+  // Send confirmation
+  postMessageToTarget(sendTo, {
+    action: 'POSTBRIDGE/HANDSHAKE_REPLY',
+    connectionID: eventData.connectionID
+  });
+
+  // Create and resolve connection
+  const connection = {
+    remote,
+    close: () => {
+      unregisterRemote();
+      unregisterLocal();
+      // ...cleanup
+    },
+    id: eventData.connectionID
+  };
+
+  resolve(connection);
+}
+```
+
+**Guest state after this step:**
+- Connection object: Created
+- Handlers: RPC handlers registered
+- Promise: Resolved
+- Status: ACTIVE
+
+### Step 4: Host Receives Confirmation
+
+```javascript
+// Host receives HANDSHAKE_REPLY (confirmation)
+function handleHandshakeReply(event) {
+  const eventData = getEventData(event);
+
+  if (eventData?.action !== actions.HANDSHAKE_REPLY) return;
+  if (connectionID !== eventData.connectionID) return;
+
+  // Connection already created in handleHandshake
+  if (!connections[eventData.connectionID]) {
+    throw new Error('No connection found');
+  }
+
+  // Resolve promise
+  resolve(connections[eventData.connectionID]);
+}
+```
+
+**Host state after this step:**
+- Promise: Resolved
+- Status: ACTIVE
+
+## Phase 3: Active
+
+Both sides now have a connection object and can make RPC calls.
+
+### Connection Object Structure
+
+```javascript
+const connection = {
+  // Unique identifier
+  id: 'abc123-def456-789',
+
+  // Proxy object for calling remote methods
+  remote: {
+    processData: (...args) => Promise,
+    calculate: (...args) => Promise,
+    // ... more methods
+  },
+
+  // Cleanup function
+  close: () => {
+    // Remove from connections map
+    // Unregister event listeners
+    // Clear RPC handlers
+    // Terminate worker (if applicable)
+  }
+};
+```
+
+### Making RPC Calls
+
+```javascript
+// Host calls guest
+const result = await connection.remote.processData([1, 2, 3]);
+console.log(result); // [2, 4, 6]
+
+// Guest calls host (inside method)
+const schema = {
+  processData: async (data, remote) => {
+    // Call host
+    await remote.log('Processing started');
+
+    const result = data.map(x => x * 2);
+
+    // Call host again
+    await remote.log('Processing complete');
+
+    return result;
+  }
+};
+```
+
+### Active State Characteristics
+
+**Resources allocated:**
+- Event listeners for RPC messages
+- responseMap for pending calls
+- Connection object in memory
+- Entry in connections map (host-side)
+
+**Operations allowed:**
+- Making RPC calls
+- Receiving RPC calls
+- Concurrent calls
+- Bidirectional communication
+
+**Memory usage:**
+- Connection object: ~1KB
+- Event listeners: ~100 bytes each
+- responseMap entries: ~100 bytes per pending call
+- Total: Usually < 10KB per connection
+
+## Phase 4: Closing
+
+### Triggering Close
+
+```javascript
+// User explicitly closes
+connection.close();
+
+// Or worker terminates (browser cleans up)
+worker.terminate();
+
+// Or page unloads
+window.addEventListener('beforeunload', () => {
+  connection.close();
+});
+```
+
+### Close Implementation
+
+**Host:**
+```javascript
+const close = () => {
+  // 1. Remove from connections map
+  delete connections[connectionID];
+
+  // 2. Remove handshake listeners
+  removeEventListener(listenTo, events.MESSAGE, handleHandshake);
+  removeEventListener(listenTo, events.MESSAGE, handleHandshakeReply);
+
+  // 3. Unregister RPC handlers
+  unregisterRemote(); // Removes response listeners
+  unregisterLocal();  // Removes request listeners
+
+  // 4. Terminate worker (if guest is a worker)
+  if (guestIsWorker) {
+    (guest as Worker).terminate();
+  }
+};
+```
+
+**Guest:**
+```javascript
+const close = () => {
+  // 1. Remove handshake listener
+  removeEventListener(listenTo, events.MESSAGE, handleHandshakeResponse);
+
+  // 2. Unregister RPC handlers
+  unregisterRemote(); // Removes response listeners
+  unregisterLocal();  // Removes request listeners
+};
+```
+
+### Cleanup Details
+
+**unregisterRemote:**
+```javascript
+function unregisterRemote() {
+  // Remove response listener
+  removeEventListener(listenTo, events.MESSAGE, responseHandler);
+
+  // Clear pending calls
+  responseMap.forEach(({ reject }, callID) => {
+    reject(new Error('Connection closed'));
+  });
+  responseMap.clear();
+}
+```
+
+**unregisterLocal:**
+```javascript
+function unregisterLocal() {
+  // Remove request listener
+  removeEventListener(listenTo, events.MESSAGE, requestHandler);
+
+  // No cleanup needed for methods map (garbage collected)
+}
+```
+
+## Phase 5: Closed
+
+After close() completes:
+
+### State
+
+**Host:**
+- Connection object: Removed from connections map
+- Handlers: All removed
+- Worker: Terminated (if applicable)
+- Promise: Original promise still resolved (doesn't change)
+
+**Guest:**
+- Handlers: All removed
+- Worker: May be terminated by host
+- Promise: Original promise still resolved
+
+### Attempting Operations
+
+```javascript
+connection.close();
+
+//  RPC calls fail
+try {
+  await connection.remote.processData([1, 2, 3]);
+} catch (error) {
+  // Error: Connection closed
+  // (if response listener was removed)
+}
+
+//  Receiving calls fails silently
+// (request listener was removed, messages ignored)
+```
+
+## Phase 6: Garbage Collection
+
+Once all references are gone, JavaScript's garbage collector frees memory.
+
+### Ensuring Cleanup
+
+```javascript
+// Keep reference
+let connection = await host.connect(worker, schema);
+
+// Use connection
+await connection.remote.doWork();
+
+// Close and clear reference
+connection.close();
+connection = null; // Allow GC
+
+// Worker and all associated resources can now be collected
+```
+
+## Multiple Connection Lifecycle
+
+The host can manage multiple connections simultaneously:
+
+```javascript
+// Create multiple workers
+const worker1 = new Worker('worker1.js');
+const worker2 = new Worker('worker2.js');
+const worker3 = new Worker('worker3.js');
+
+// Connect to all
+const conn1 = await host.connect(worker1, schema);
+const conn2 = await host.connect(worker2, schema);
+const conn3 = await host.connect(worker3, schema);
+
+// All active simultaneously
+await conn1.remote.work();
+await conn2.remote.work();
+await conn3.remote.work();
+
+// Close individually
+conn1.close(); // conn2 and conn3 still active
+await conn2.remote.work(); // Still works
+conn2.close(); // conn3 still active
+conn3.close(); // All closed now
+```
+
+**connections map evolution:**
+```javascript
+// After conn1 connected
+connections = {
+  'id1': conn1
+}
+
+// After conn2 connected
+connections = {
+  'id1': conn1,
+  'id2': conn2
+}
+
+// After conn3 connected
+connections = {
+  'id1': conn1,
+  'id2': conn2,
+  'id3': conn3
+}
+
+// After conn1.close()
+connections = {
+  'id2': conn2,
+  'id3': conn3
+}
+
+// After all closed
+connections = {}
+```
+
+## Lifecycle Events
+
+postbridge doesn't emit explicit lifecycle events, but you can detect state changes:
+
+```javascript
+// Detect connection established
+const connection = await host.connect(worker, schema);
+console.log('Connected!', connection.id);
+
+// Detect worker termination
+worker.addEventListener('error', (error) => {
+  console.error('Worker error:', error);
+});
+
+// Detect connection closed
+const originalClose = connection.close;
+connection.close = () => {
+  console.log('Connection closing...');
+  originalClose();
+  console.log('Connection closed.');
+};
+```
+
+## Error Scenarios
+
+### Handshake Timeout
+
+If guest never sends HANDSHAKE_REQUEST:
+
+```javascript
+// Host waits forever
+const connection = await host.connect(worker, schema);
+// Promise never resolves
+
+// Solution: Add timeout
+const timeoutPromise = new Promise((_, reject) =>
+  setTimeout(() => reject(new Error('Handshake timeout')), 5000)
+);
+
+const connection = await Promise.race([
+  host.connect(worker, schema),
+  timeoutPromise
+]);
+```
+
+### Worker Crash During Active Phase
+
+```javascript
+const connection = await host.connect(worker, schema);
+
+// Worker crashes
+// Pending RPC calls will hang (responseMap never receives reply)
+
+// Detection:
+worker.addEventListener('error', (error) => {
+  console.error('Worker crashed:', error);
+  connection.close(); // Clean up
+});
+```
+
+### Close During Pending Calls
+
+```javascript
+// Make call
+const promise = connection.remote.longRunningTask();
+
+// Close before response
+connection.close();
+
+// Promise behavior: depends on implementation
+// postbridge: Promise may reject with "Connection closed"
+```
+
+## Best Practices
+
+### 1. Always Close Connections
+
+```javascript
+//  Good: Explicit cleanup
+const connection = await host.connect(worker, schema);
+try {
+  await connection.remote.doWork();
+} finally {
+  connection.close();
+}
+
+//  Bad: Resource leak
+const connection = await host.connect(worker, schema);
+await connection.remote.doWork();
+// connection never closed
+```
+
+### 2. Handle Worker Errors
+
+```javascript
+const worker = new Worker('worker.js');
+
+worker.addEventListener('error', (error) => {
+  console.error('Worker error:', error);
+  // Clean up if needed
+});
+
+const connection = await host.connect(worker, schema);
+```
+
+### 3. Close on Page Unload
+
+```javascript
+let connection;
+
+window.addEventListener('beforeunload', () => {
+  connection?.close();
+});
+
+connection = await host.connect(worker, schema);
+```
+
+### 4. Use Try-Finally for Cleanup
+
+```javascript
+const connection = await host.connect(worker, schema);
+
+try {
+  // Use connection
+  const result = await connection.remote.process(data);
+  return result;
+} finally {
+  // Always cleanup
+  connection.close();
+}
+```
+
+### 5. Connection Pooling
+
+For frequently created/destroyed connections:
+
+```javascript
+class WorkerPool {
+  constructor(workerScript, size) {
+    this.connections = [];
+    this.available = [];
+
+    // Create pool
+    for (let i = 0; i < size; i++) {
+      const worker = new Worker(workerScript);
+      host.connect(worker, schema).then(conn => {
+        this.connections.push(conn);
+        this.available.push(conn);
+      });
+    }
+  }
+
+  async execute(task) {
+    // Get available connection
+    const conn = this.available.pop();
+    if (!conn) throw new Error('No available connections');
+
+    try {
+      return await conn.remote.process(task);
+    } finally {
+      // Return to pool
+      this.available.push(conn);
+    }
+  }
+
+  close() {
+    this.connections.forEach(conn => conn.close());
+  }
+}
+
+// Usage
+const pool = new WorkerPool('worker.js', 4);
+await pool.execute(data);
+// ...
+pool.close(); // Cleanup all
+```
+
+## Lifecycle Timeline Example
+
+```
+T=0ms    Host: host.connect(worker, schema)
+         - Generate connectionID
+         - Register handshake listeners
+
+T=1ms    Guest: guest.connect(schema)
+         - Extract methods
+         - Send HANDSHAKE_REQUEST
+
+T=2ms    Host: Receive HANDSHAKE_REQUEST
+         - Validate guest
+         - Register methods
+         - Create connection object
+         - Add to connections map
+         - Send HANDSHAKE_REPLY
+
+T=3ms    Guest: Receive HANDSHAKE_REPLY
+         - Register methods
+         - Run onConnectionSetup
+         - Send confirmation
+         - Resolve promise
+
+T=4ms    Host: Receive confirmation
+         - Resolve promise
+
+[ACTIVE: T=4ms to T=1000ms]
+         - RPC calls made
+         - Methods executed
+         - Both sides communicate
+
+T=1000ms Host: connection.close()
+         - Remove from connections map
+         - Unregister all listeners
+         - Clear responseMap
+         - Terminate worker
+
+T=1001ms Connection fully closed
+         - All resources freed
+```
+
+## Summary
+
+**Lifecycle Phases:**
+1. **Initialization** - connect() called, promise pending
+2. **Handshake** - 3-message protocol, method registration
+3. **Active** - RPC calls work, bidirectional communication
+4. **Closing** - close() called, cleanup begins
+5. **Closed** - All handlers removed, resources freed
+6. **GC** - JavaScript cleans up memory
+
+**Key Points:**
+- Always call close() to prevent leaks
+- Handle worker errors
+- Clean up on page unload
+- Connection object remains resolved after close()
+- Multiple connections can coexist
+
+**Next steps:**
+- Review [Core Components](?path=/docs/introduction--docs) for implementation details
+- Check [Guides](?path=/docs/guides-web-workers--docs) for practical patterns
+- See [Error Handling Guide](?path=/docs/guides-error-handling--docs)
+
+---
+
+Understanding the lifecycle helps you manage resources effectively and avoid memory leaks!
