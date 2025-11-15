@@ -127,9 +127,9 @@ tramp
 # ==================================
 # Package Manager Files
 # ==================================
+# Keep pnpm-lock.yaml for reproducible builds and CI/CD
 package-lock.json
 yarn.lock
-pnpm-lock.yaml
 .yarn/
 .pnp.*
 .pnpm-debug.log
