@@ -1,11 +1,12 @@
 import path from "path";
 import { defineConfig } from "vite";
 import dts from "vite-plugin-dts";
-import { terserOptions } from "./vite.config.shared";
+import obfuscatorPlugin from "vite-plugin-javascript-obfuscator";
+import { obfuscatorOptions, terserOptionsLight } from "./vite.config.shared";
 
-// https://vitejs.dev/config/
+// This config uses aggressive obfuscation - use only if you need strong code protection
 export default defineConfig({
-  plugins: [dts({ insertTypesEntry: true, outDir: "lib" })],
+  plugins: [dts({ insertTypesEntry: true, outDir: "lib" }), obfuscatorPlugin(obfuscatorOptions)],
   build: {
     lib: {
       entry: path.resolve(__dirname, "src/index.ts"),
@@ -19,10 +20,10 @@ export default defineConfig({
         dir: "lib",
       },
     },
-    sourcemap: true,
+    sourcemap: false,
     emptyOutDir: true,
     minify: "terser",
-    terserOptions,
+    terserOptions: terserOptionsLight,
   },
   worker: {
     format: "es",
