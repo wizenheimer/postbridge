@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bridge - Message Relay Example</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>Bridge Message Relay</h1>
+        <p class="subtitle">Direct messaging & broadcast demonstration</p>
+      </header>
+
+      <div class="info-section">
+        <div class="info-item">
+          <label>My Tab ID:</label>
+          <code id="my-tab-id">Connecting...</code>
+        </div>
+        <div class="info-item">
+          <label>Connected Tabs:</label>
+          <code id="tab-count">0</code>
+        </div>
+      </div>
+
+      <div class="input-section">
+        <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" />
+        <button id="broadcast-btn" class="primary">Broadcast to All</button>
+      </div>
+
+      <section class="tabs-section">
+        <h2>Connected Tabs</h2>
+        <div id="tabs-list" class="tabs-list">
+          <p class="empty-state">No other tabs connected</p>
+        </div>
+      </section>
+
+      <section class="log-section">
+        <h2>Message Log</h2>
+        <div id="message-log" class="message-log">
+          <p class="empty-state">No messages yet</p>
+        </div>
+      </section>
+
+      <footer>
+        <p>Open multiple tabs to see direct messaging in action. Use Ctrl+Shift+T to reopen closed tabs.</p>
+      </footer>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
