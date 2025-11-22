@@ -344,7 +344,7 @@ await connection.remote.processBatch(items);
 
 For large binary data, use transferables (zero-copy):
 ```javascript
-import { withTransferable } from 'postbridge';
+import { withTransferable } from '@wizenheimer/postbridge';
 
 const buffer = new ArrayBuffer(10 * 1024 * 1024); // 10MB
 await connection.remote.process(

@@ -116,7 +116,7 @@ node main.js
 **worker.mjs:**
 ```javascript
 import { parentPort } from 'worker_threads';
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   processData: (data) => data.map(x => x * 2)
@@ -126,7 +126,7 @@ const connection = await guest.connect({
 **main.mjs:**
 ```javascript
 import { Worker } from 'worker_threads';
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const worker = new Worker('./worker.mjs');
 const connection = await host.connect(worker, {});

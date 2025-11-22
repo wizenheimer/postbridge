@@ -9,13 +9,13 @@ Get up and running with postbridge in under 5 minutes! This guide will walk you 
 ## Installation
 
 ```bash
-npm install postbridge
+npm install @wizenheimer/postbridge
 ```
 
 Or with yarn:
 
 ```bash
-yarn add postbridge
+yarn add @wizenheimer/postbridge
 ```
 
 ## Your First postbridge Application
@@ -30,7 +30,7 @@ Create a file called `worker.js`:
 
 ```javascript
 // worker.js
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 // Connect to the host with our API
 const connection = await guest.connect({
@@ -58,7 +58,7 @@ Create your main file (`main.js` or `index.html` with script):
 
 ```javascript
 // main.js
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 async function main() {
   // Create the worker
@@ -259,7 +259,7 @@ The guest must call `guest.connect()` for the handshake to complete. Make sure t
 ### TypeScript errors
 postbridge is fully typed! Import types:
 ```typescript
-import { host, Connection, Schema } from 'postbridge';
+import { host, Connection, Schema } from '@wizenheimer/postbridge';
 ```
 
 ### Can't call methods

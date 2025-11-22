@@ -25,7 +25,7 @@ Bridge uses a **strict loading strategy** for the SharedWorker:
 Provide your own worker URL for full control:
 
 ```typescript
-import { bridge } from 'postbridge';
+import { bridge } from '@wizenheimer/postbridge';
 
 const conn = await bridge.connect(schema, {
   workerURL: '/workers/bridge-worker.js'
@@ -77,7 +77,7 @@ Bridge will **throw an error**. This is intentional.
 
 ```typescript
 // Just use it
-import { bridge } from 'postbridge';
+import { bridge } from '@wizenheimer/postbridge';
 
 const conn = await bridge.connect({
   updateCount: (count) => {
@@ -134,7 +134,7 @@ Next.js doesn't support SharedWorker imports out of the box. Use the worker URL 
 
 ```typescript
 // pages/index.tsx
-import { bridge } from 'postbridge';
+import { bridge } from '@wizenheimer/postbridge';
 
 function MyPage() {
   useEffect(() => {

@@ -456,7 +456,7 @@ postbridge **automatically detects** the current context and adapts:
 ### Auto-detection in Guest
 ```javascript
 // In any context (worker, iframe, etc.)
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 // postbridge figures out the context automatically!
 const connection = await guest.connect(schema);

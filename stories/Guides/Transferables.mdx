@@ -87,7 +87,7 @@ document.getElementById('div')
 ### Basic Usage
 
 ```javascript
-import { withTransferable } from 'postbridge';
+import { withTransferable } from '@wizenheimer/postbridge';
 
 const buffer = new ArrayBuffer(1024);
 
@@ -161,7 +161,7 @@ await connection.remote.process(
 
 ```javascript
 // main.js
-import { host, withTransferable } from 'postbridge';
+import { host, withTransferable } from '@wizenheimer/postbridge';
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -190,7 +190,7 @@ ctx.putImageData(processed, 0, 0);
 
 ```javascript
 // image-worker.js
-import { guest, withTransferable } from 'postbridge';
+import { guest, withTransferable } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   processImage: ({ data, width, height }) => {
@@ -249,7 +249,7 @@ fileInput.addEventListener('change', async (e) => {
 
 ```javascript
 // file-worker.js
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   processFile: ({ data, name, type }) => {

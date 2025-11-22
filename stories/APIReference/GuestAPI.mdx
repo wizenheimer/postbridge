@@ -222,7 +222,7 @@ connection.close();
 ### TypeScript Support
 
 ```typescript
-import { guest, Connection } from 'postbridge';
+import { guest, Connection } from '@wizenheimer/postbridge';
 
 // Define schemas
 interface GuestSchema {
@@ -256,7 +256,7 @@ await connection.remote.log(123); // Error: wrong type
 
 ```javascript
 // worker.js
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   // Expose methods to host
@@ -276,7 +276,7 @@ console.log('Worker ready, connection ID:', connection.id);
 
 ```javascript
 // worker.js
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 let apiKey;
 let database;
@@ -312,7 +312,7 @@ console.log('Worker ready!');
 
 ```javascript
 // worker.js
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   processLargeDataset: async (dataset, remote) => {
@@ -342,7 +342,7 @@ const connection = await guest.connect({
 
 ```javascript
 // Inside iframe
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   render: (data) => {
@@ -389,7 +389,7 @@ console.log('Worker thread ready');
 
 ```javascript
 // worker.js
-import { guest, withTransferable } from 'postbridge';
+import { guest, withTransferable } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   processBuffer: (data) => {

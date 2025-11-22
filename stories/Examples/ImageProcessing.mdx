@@ -150,7 +150,7 @@ This example demonstrates using postbridge to offload image processing to a Web 
 ### main.js
 
 ```javascript
-import { host, withTransferable } from 'postbridge';
+import { host, withTransferable } from '@wizenheimer/postbridge';
 
 // DOM elements
 const fileInput = document.getElementById('file-input');
@@ -292,7 +292,7 @@ initWorker();
 ### image-worker.js
 
 ```javascript
-import { guest, withTransferable } from 'postbridge';
+import { guest, withTransferable } from '@wizenheimer/postbridge';
 
 // Connect to host
 const connection = await guest.connect({

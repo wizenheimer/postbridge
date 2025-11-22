@@ -44,7 +44,7 @@ Nested APIs allow you to organize methods into **namespaced hierarchies** rather
 
 **Guest:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   math: {
@@ -67,7 +67,7 @@ const connection = await guest.connect({
 
 **Host:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const worker = new Worker('worker.js', { type: 'module' });
 const connection = await host.connect(worker, {});

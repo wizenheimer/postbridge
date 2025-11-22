@@ -39,7 +39,7 @@ iframes (inline frames) embed another HTML document within the current page. The
   <div id="content"></div>
 
   <script type="module">
-    import { guest } from 'postbridge';
+    import { guest } from '@wizenheimer/postbridge';
 
     const connection = await guest.connect({
       // Methods parent can call
@@ -80,7 +80,7 @@ iframes (inline frames) embed another HTML document within the current page. The
   <button id="update-btn">Update Widget</button>
 
   <script type="module">
-    import { host } from 'postbridge';
+    import { host } from '@wizenheimer/postbridge';
 
     const iframe = document.getElementById('widget');
 
@@ -265,7 +265,7 @@ const connection = await host.connect(iframe, {
 
 **parent.html:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const paymentIframe = document.getElementById('payment-iframe');
 paymentIframe.src = 'https://payment-provider.com/widget.html';
@@ -300,7 +300,7 @@ await connection.remote.initializePayment();
 
 **widget.html (payment provider):**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   initializePayment: async (_, remote) => {
@@ -329,7 +329,7 @@ const connection = await guest.connect({
 
 **parent.html:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const chartIframe = document.getElementById('chart-iframe');
 
@@ -361,7 +361,7 @@ document.getElementById('refresh-btn').addEventListener('click', async () => {
 
 **chart-iframe.html:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 import Chart from 'chart.js/auto';
 
 let currentChart = null;
@@ -403,7 +403,7 @@ const connection = await guest.connect({
 
 **parent.html:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const editorIframe = document.getElementById('editor-iframe');
 
@@ -434,7 +434,7 @@ document.getElementById('save-btn').addEventListener('click', async () => {
 
 **editor-iframe.html:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 let editor;
 let changeTimer;

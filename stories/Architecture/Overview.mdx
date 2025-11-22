@@ -79,7 +79,7 @@ This document provides a high-level overview of postbridge's architecture, expla
 
 **Example:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const worker = new Worker('worker.js');
 const connection = await host.connect(worker, {
@@ -105,7 +105,7 @@ await connection.remote.process(data);
 
 **Example:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   // Guest methods

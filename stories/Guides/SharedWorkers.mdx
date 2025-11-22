@@ -34,7 +34,7 @@ SharedWorkers are special workers that can be **shared across multiple browser t
 
 **shared-worker.js:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 // Track all connected tabs
 const connections = new Map();
@@ -210,7 +210,7 @@ console.log('SharedWorker initialized');
 
 **app.js:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 let myTabId = null;
 
@@ -364,7 +364,7 @@ init().catch(console.error);
 
 **shared-worker.js:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 let websocket = null;
 const subscribers = new Map();
@@ -458,7 +458,7 @@ function initWebSocket() {
 
 **cache-worker.js:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const cache = new Map();
 const cacheTTL = new Map();
@@ -547,7 +547,7 @@ console.log(user); // { id: 1, name: 'Alice' }
 
 **notification-worker.js:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const tabs = new Map();
 

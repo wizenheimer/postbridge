@@ -46,7 +46,7 @@ Input CSV → Extract → Transform → Validate → Aggregate → Output JSON
 
 ```javascript
 import { Worker } from 'worker_threads';
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 import fs from 'fs/promises';
 import os from 'os';
 
@@ -277,7 +277,7 @@ main().catch(console.error);
 ### workers/extract-worker.js
 
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 import fs from 'fs/promises';
 
 const connection = await guest.connect({
@@ -309,7 +309,7 @@ console.log('Extract worker ready');
 ### workers/transform-worker.js
 
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   transform: async (records) => {
@@ -337,7 +337,7 @@ console.log('Transform worker ready');
 ### workers/validate-worker.js
 
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   validate: async (record) => {
@@ -382,7 +382,7 @@ console.log('Validate worker ready');
 ### workers/aggregate-worker.js
 
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   aggregate: async (records) => {

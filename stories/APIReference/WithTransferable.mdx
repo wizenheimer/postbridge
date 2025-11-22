@@ -37,7 +37,7 @@ await connection.remote.process(
 ### Single Transferable
 
 ```javascript
-import { withTransferable } from 'postbridge';
+import { withTransferable } from '@wizenheimer/postbridge';
 
 const buffer = new ArrayBuffer(1024 * 1024); // 1MB
 
@@ -218,7 +218,7 @@ withTransferable(t => t(buffer))
 ### Example 1: Image Processing
 
 ```javascript
-import { withTransferable } from 'postbridge';
+import { withTransferable } from '@wizenheimer/postbridge';
 
 // Get image data from canvas
 const canvas = document.getElementById('canvas');
@@ -290,7 +290,7 @@ const processed = await connection.remote.processAudio(
 
 ```javascript
 // Worker can also use withTransferable
-import { guest, withTransferable } from 'postbridge';
+import { guest, withTransferable } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   processData: (input) => {
@@ -383,7 +383,7 @@ async function smartSend(buffer) {
 ## TypeScript Support
 
 ```typescript
-import { withTransferable } from 'postbridge';
+import { withTransferable } from '@wizenheimer/postbridge';
 
 // Type-safe usage
 const buffer: ArrayBuffer = new ArrayBuffer(1024);

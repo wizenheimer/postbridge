@@ -225,7 +225,7 @@ await connection.remote.doWork();
 Full type safety with TypeScript:
 
 ```typescript
-import { host, Connection } from 'postbridge';
+import { host, Connection } from '@wizenheimer/postbridge';
 
 // Define schemas
 interface HostSchema {
@@ -261,7 +261,7 @@ await connection.remote.processData("not an array");
 #### Basic Worker Connection
 
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const worker = new Worker('worker.js', { type: 'module' });
 
@@ -345,7 +345,7 @@ try {
 #### With Transferables
 
 ```javascript
-import { host, withTransferable } from 'postbridge';
+import { host, withTransferable } from '@wizenheimer/postbridge';
 
 const worker = new Worker('worker.js', { type: 'module' });
 const connection = await host.connect(worker, {});

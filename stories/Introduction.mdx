@@ -128,7 +128,7 @@ Real-world code examples demonstrating postbridge features.
 
 **Host (Main Thread):**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 const worker = new Worker('worker.js');
 const connection = await host.connect(worker, {
@@ -142,7 +142,7 @@ console.log(result); // 15
 
 **Guest (Worker):**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   multiply: (a, b) => a * b
@@ -155,7 +155,7 @@ await connection.remote.logMessage('Hello from worker!');
 ### Cross-Tab Broadcasting (1:N)
 
 ```javascript
-import { bridge } from 'postbridge';
+import { bridge } from '@wizenheimer/postbridge';
 
 // Define schema (same code in all tabs)
 const schema = {
@@ -176,7 +176,7 @@ await conn.remote.updateCount(42);
 ### Direct Tab-to-Tab (1:1 Targeted)
 
 ```javascript
-import { bridge } from 'postbridge';
+import { bridge } from '@wizenheimer/postbridge';
 
 const conn = await bridge.connect(schema);
 

@@ -28,7 +28,7 @@ Web Workers are background threads in browsers that allow you to run JavaScript 
 
 **worker.js:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   // Expose methods to main thread
@@ -58,7 +58,7 @@ function isPrime(n) {
 
 **main.js:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 // Create worker
 const worker = new Worker('worker.js', { type: 'module' });
@@ -84,7 +84,7 @@ connection.close();
 
 **main.js:**
 ```javascript
-import { host, withTransferable } from 'postbridge';
+import { host, withTransferable } from '@wizenheimer/postbridge';
 
 const worker = new Worker('image-worker.js', { type: 'module' });
 const connection = await host.connect(worker, {});
@@ -114,7 +114,7 @@ ctx.putImageData(newImageData, 0, 0);
 
 **image-worker.js:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   applyFilter: ({ data, width, height }) => {
@@ -159,7 +159,7 @@ console.log('Processing complete:', results);
 
 **data-worker.js:**
 ```javascript
-import { guest } from 'postbridge';
+import { guest } from '@wizenheimer/postbridge';
 
 const connection = await guest.connect({
   processDataset: async (data, remote) => {
@@ -188,7 +188,7 @@ const connection = await guest.connect({
 
 **worker-pool.js:**
 ```javascript
-import { host } from 'postbridge';
+import { host } from '@wizenheimer/postbridge';
 
 export class WorkerPool {
   constructor(workerScript, schema, poolSize = 4) {
